@@ -26,6 +26,10 @@ export const FX_TEXTURE_KEYS = {
   sparkle: 'fx-sparkle',
 };
 
+export const BACKGROUND_TEXTURE_KEYS = {
+  duskForest: 'bg-dusk-forest',
+};
+
 export const TEXTURE_FILE_PATHS: Record<string, string> = {
   [TILE_TEXTURE_KEYS.key]: spritePath('tile-key.png'),
   [TILE_TEXTURE_KEYS.coin]: spritePath('tile-coin.png'),
@@ -37,11 +41,13 @@ export const TEXTURE_FILE_PATHS: Record<string, string> = {
   [CROW_TEXTURE_KEYS.fly]: spritePath('crow-fly.png'),
   [FX_TEXTURE_KEYS.feather]: spritePath('fx-feather.png'),
   [FX_TEXTURE_KEYS.sparkle]: spritePath('fx-sparkle.png'),
+  [BACKGROUND_TEXTURE_KEYS.duskForest]: `${BASE_URL}backgrounds/pixel-forest.png?v=${SPRITE_CACHE_BUST}`,
 };
 
 export const ALL_TEXTURE_KEYS = Object.keys(TEXTURE_FILE_PATHS);
 
-export const DEFAULT_STATUS = 'Swap adjacent shiny tiles to strike, then spend grit on a special or pass.';
+export const DEFAULT_STATUS =
+  'Swap adjacent shiny tiles, beat the 1:00 clock, and chase a high score.';
 
 export const BOARD_COLORS = {
   border: '#f5d5a4',

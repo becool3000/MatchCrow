@@ -1,255 +1,377 @@
 import { DEFAULT_STATUS } from '../game/assets/manifest.ts';
-import {
-  ENEMY_DEFINITIONS,
-  RELIC_DEFINITIONS,
-  SPECIAL_DEFINITIONS,
-  SPECIAL_SLOT_IDS,
-  STATUS_LABELS,
-  type HybridBattleState,
-  type RewardOption,
-  type SpecialSlotId,
-  type StatusEffect,
-} from '../game/simulation/types.ts';
+import type { MatchCrowViewState } from '../game/CrowsCacheGame.ts';
+import type { LeaderboardEntry } from '../services/leaderboard.ts';
+
+type OverlayMode = 'leaderboard' | 'submit' | null;
+
+interface LeaderboardOverlayState {
+  status: 'idle' | 'loading' | 'ready' | 'error' | 'unavailable';
+  entries: LeaderboardEntry[];
+  highlightedPlayerId: string;
+  message: string;
+}
+
+interface SubmitOverlayState {
+  status: 'idle' | 'submitting' | 'error' | 'success';
+  initials: string;
+  message: string;
+}
 
 export interface GameHud {
   canvasHost: HTMLDivElement;
-  render: (state: HybridBattleState) => void;
+  render: (state: MatchCrowViewState) => void;
   setStatus: (text: string) => void;
+  pulseTimer: (bonusTimeMs: number) => void;
   onRestart: (handler: () => void) => void;
-  onStart: (handler: () => void) => void;
-  onSpecial: (handler: (slotId: SpecialSlotId) => void) => void;
-  onSkip: (handler: () => void) => void;
-  onReward: (handler: (rewardId: string) => void) => void;
+  onOpenLeaderboard: (handler: () => void) => void;
+  onRetryLeaderboard: (handler: () => void) => void;
+  onOpenSubmit: (handler: () => void) => void;
+  onSubmitScore: (handler: (initials: string) => void) => void;
+  showLeaderboardLoading: () => void;
+  showLeaderboardEntries: (entries: LeaderboardEntry[], highlightedPlayerId: string) => void;
+  showLeaderboardError: (message: string) => void;
+  showLeaderboardUnavailable: (message: string) => void;
+  openSubmitDialog: (initials: string) => void;
+  setSubmitBusy: () => void;
+  setSubmitError: (message: string) => void;
+  setSubmitSuccess: (message: string) => void;
+  closeOverlay: () => void;
 }
 
-export function createHud(root: HTMLDivElement, initialState: HybridBattleState): GameHud {
-  const specialButtons = SPECIAL_SLOT_IDS.map((slotId) => {
-    const special = SPECIAL_DEFINITIONS[slotId];
-
-    return `
-      <button type="button" class="special-button" data-special="${slotId}">
-        <span class="special-name">${special.label}</span>
-        <span class="special-meta">${special.cost} grit</span>
-      </button>
-    `;
-  }).join('');
-
+export function createHud(
+  root: HTMLDivElement,
+  initialState: MatchCrowViewState,
+  options: { leaderboardReadEnabled: boolean; leaderboardSubmitEnabled: boolean },
+): GameHud {
   root.innerHTML = `
     <div class="page-shell">
-      <section class="start-screen" data-start-screen>
-        <div class="start-card">
-          <h1>MatchCrow</h1>
-          <div class="start-copy">
-            <div class="start-tip">
-              <span class="tip-label">Swap</span>
-              <p>Match shiny tiles to deal damage, gain guard, grit, and healing.</p>
-            </div>
-            <div class="start-tip">
-              <span class="tip-label">Spend</span>
-              <p>After each settled swap, use one special or pass before the enemy strikes.</p>
-            </div>
-          </div>
-          <button type="button" class="start-button" data-start>Start Scrap</button>
-        </div>
-      </section>
       <main class="game-shell">
         <header class="hud-strip">
           <span class="brand-chip">MatchCrow</span>
-          <div class="score-box">
-            <strong class="score-value" data-score>000000</strong>
+          <div class="stat-box">
+            <span>Score</span>
+            <strong data-score>000000</strong>
           </div>
-          <button type="button" class="restart-button" data-restart>Reset</button>
+          <div class="stat-box">
+            <span>High</span>
+            <strong data-high-score>000000</strong>
+          </div>
+          <div class="stat-box stat-box-timer" data-timer-box>
+            <span>Time</span>
+            <strong data-timer>${formatRemainingTime(initialState.timeRemainingMs)}</strong>
+            <em class="timer-bonus" data-timer-bonus hidden>+0s</em>
+          </div>
+          <div class="hud-actions">
+            <button type="button" class="hud-button" data-open-leaderboard>Top 100</button>
+            <button type="button" class="hud-button" data-open-submit hidden>Submit Score</button>
+            <button type="button" class="restart-button" data-restart>Reset</button>
+          </div>
         </header>
-        <section class="combat-top">
-          <div class="pill-row">
-            <span class="encounter-pill" data-encounter>Fight 1 / 4</span>
-            <span class="turn-pill" data-turn>Your Turn</span>
-          </div>
-          <div class="enemy-strip">
-            <div class="enemy-head">
-              <strong data-enemy-name>Enemy</strong>
-              <span data-enemy-hp>0 / 0</span>
-              <span data-enemy-guard>Guard 0</span>
-            </div>
-            <p class="enemy-intent" data-enemy-intent>Read the foe.</p>
-            <div class="status-row status-row-enemy" data-enemy-statuses></div>
-          </div>
-        </section>
-        <section class="playfield-frame">
-          <p class="screen-reader-status" data-status>${DEFAULT_STATUS}</p>
+
+        <p class="status-strip" data-status>${DEFAULT_STATUS}</p>
+
+        <section class="playfield-frame" data-playfield-frame>
           <div class="playfield-canvas" data-canvas></div>
-          <div class="phase-overlay" data-overlay hidden></div>
-        </section>
-        <section class="battle-panel">
-          <div class="player-strip">
-            <div class="player-head">
-              <strong>MatchCrow</strong>
-              <span>Crow Duelist</span>
-            </div>
-            <div class="player-stats">
-              <span>HP <strong data-player-hp>34 / 34</strong></span>
-              <span>Guard <strong data-player-guard>0</strong></span>
-              <span>Grit <strong data-player-grit>1 / 5</strong></span>
-            </div>
-            <div class="status-row" data-player-statuses></div>
-          </div>
-          <p class="battle-status" data-visible-status>${DEFAULT_STATUS}</p>
-          <div class="special-row">
-            ${specialButtons}
-            <button type="button" class="skip-button" data-skip>Pass</button>
-          </div>
         </section>
       </main>
+
+      <div class="overlay-shell" data-overlay hidden>
+        <div class="overlay-card">
+          <div class="overlay-head">
+            <strong data-overlay-title>Overlay</strong>
+            <button type="button" class="overlay-close" data-close-overlay>Close</button>
+          </div>
+          <div class="overlay-body" data-overlay-body></div>
+        </div>
+      </div>
     </div>
   `;
 
-  const pageShell = root.querySelector<HTMLDivElement>('.page-shell');
-  const startButton = root.querySelector<HTMLButtonElement>('[data-start]');
   const canvasHost = root.querySelector<HTMLDivElement>('[data-canvas]');
   const scoreEl = root.querySelector<HTMLElement>('[data-score]');
+  const highScoreEl = root.querySelector<HTMLElement>('[data-high-score]');
+  const timerEl = root.querySelector<HTMLElement>('[data-timer]');
+  const timerBoxEl = root.querySelector<HTMLElement>('[data-timer-box]');
+  const timerBonusEl = root.querySelector<HTMLElement>('[data-timer-bonus]');
   const statusEl = root.querySelector<HTMLElement>('[data-status]');
-  const visibleStatusEl = root.querySelector<HTMLElement>('[data-visible-status]');
+  const playfieldFrameEl = root.querySelector<HTMLElement>('[data-playfield-frame]');
   const restartButton = root.querySelector<HTMLButtonElement>('[data-restart]');
-  const encounterEl = root.querySelector<HTMLElement>('[data-encounter]');
-  const turnEl = root.querySelector<HTMLElement>('[data-turn]');
-  const playerHpEl = root.querySelector<HTMLElement>('[data-player-hp]');
-  const playerGuardEl = root.querySelector<HTMLElement>('[data-player-guard]');
-  const playerGritEl = root.querySelector<HTMLElement>('[data-player-grit]');
-  const playerStatusesEl = root.querySelector<HTMLDivElement>('[data-player-statuses]');
-  const enemyNameEl = root.querySelector<HTMLElement>('[data-enemy-name]');
-  const enemyHpEl = root.querySelector<HTMLElement>('[data-enemy-hp]');
-  const enemyGuardEl = root.querySelector<HTMLElement>('[data-enemy-guard]');
-  const enemyIntentEl = root.querySelector<HTMLElement>('[data-enemy-intent]');
-  const enemyStatusesEl = root.querySelector<HTMLDivElement>('[data-enemy-statuses]');
+  const leaderboardButton = root.querySelector<HTMLButtonElement>('[data-open-leaderboard]');
+  const submitButton = root.querySelector<HTMLButtonElement>('[data-open-submit]');
   const overlayEl = root.querySelector<HTMLDivElement>('[data-overlay]');
-  const specialEls = Array.from(root.querySelectorAll<HTMLButtonElement>('[data-special]'));
-  const skipButton = root.querySelector<HTMLButtonElement>('[data-skip]');
+  const overlayTitleEl = root.querySelector<HTMLElement>('[data-overlay-title]');
+  const overlayBodyEl = root.querySelector<HTMLDivElement>('[data-overlay-body]');
 
   if (
-    !pageShell ||
-    !startButton ||
     !canvasHost ||
     !scoreEl ||
+    !highScoreEl ||
+    !timerEl ||
+    !timerBoxEl ||
+    !timerBonusEl ||
     !statusEl ||
-    !visibleStatusEl ||
+    !playfieldFrameEl ||
     !restartButton ||
-    !encounterEl ||
-    !turnEl ||
-    !playerHpEl ||
-    !playerGuardEl ||
-    !playerGritEl ||
-    !playerStatusesEl ||
-    !enemyNameEl ||
-    !enemyHpEl ||
-    !enemyGuardEl ||
-    !enemyIntentEl ||
-    !enemyStatusesEl ||
+    !leaderboardButton ||
+    !submitButton ||
     !overlayEl ||
-    !skipButton ||
-    specialEls.length !== SPECIAL_SLOT_IDS.length
+    !overlayTitleEl ||
+    !overlayBodyEl
   ) {
     throw new Error('MatchCrow HUD failed to initialize.');
   }
 
-  const startHandlers = new Set<() => void>();
-  const restartHandlers = new Set<() => void>();
-  const specialHandlers = new Set<(slotId: SpecialSlotId) => void>();
-  const skipHandlers = new Set<() => void>();
-  const rewardHandlers = new Set<(rewardId: string) => void>();
+  const ensuredOverlayEl = overlayEl;
+  const ensuredOverlayTitleEl = overlayTitleEl;
+  const ensuredOverlayBodyEl = overlayBodyEl;
 
-  const fireRestart = (): void => {
-    restartHandlers.forEach((handler) => handler());
+  const restartHandlers = new Set<() => void>();
+  const openLeaderboardHandlers = new Set<() => void>();
+  const retryLeaderboardHandlers = new Set<() => void>();
+  const openSubmitHandlers = new Set<() => void>();
+  const submitHandlers = new Set<(initials: string) => void>();
+
+  let currentState = initialState;
+  let overlayMode: OverlayMode = null;
+  let timerPulseTimeout: number | undefined;
+  let leaderboardState: LeaderboardOverlayState = {
+    status: 'idle',
+    entries: [],
+    highlightedPlayerId: '',
+    message: '',
+  };
+  let submitState: SubmitOverlayState = {
+    status: 'idle',
+    initials: initialState.leaderboard.lastSubmittedInitials,
+    message: '',
   };
 
-  restartButton.addEventListener('click', fireRestart);
-
-  startButton.addEventListener('click', () => {
-    pageShell.classList.add('is-started');
-    startHandlers.forEach((handler) => handler());
+  restartButton.addEventListener('click', () => {
+    restartHandlers.forEach((handler) => handler());
   });
 
-  specialEls.forEach((button) => {
-    button.addEventListener('click', () => {
-      if (button.disabled) {
-        return;
-      }
-
-      const slotId = button.dataset.special as SpecialSlotId | undefined;
-
-      if (!slotId) {
-        return;
-      }
-
-      specialHandlers.forEach((handler) => handler(slotId));
-    });
+  leaderboardButton.addEventListener('click', () => {
+    openLeaderboardHandlers.forEach((handler) => handler());
   });
 
-  skipButton.addEventListener('click', () => {
-    if (skipButton.disabled) {
+  submitButton.addEventListener('click', () => {
+    if (submitButton.hidden) {
       return;
     }
 
-    skipHandlers.forEach((handler) => handler());
+    openSubmitHandlers.forEach((handler) => handler());
+  });
+
+  ensuredOverlayEl.addEventListener('click', (event) => {
+    const target = event.target as HTMLElement | null;
+
+    if (!target) {
+      return;
+    }
+
+    if (target.closest('[data-close-overlay]')) {
+      closeOverlay();
+      return;
+    }
+
+    if (target.closest('[data-retry-leaderboard]')) {
+      retryLeaderboardHandlers.forEach((handler) => handler());
+    }
+  });
+
+  ensuredOverlayEl.addEventListener('input', (event) => {
+    const target = event.target as HTMLInputElement | null;
+
+    if (!target || target.dataset.initialsInput !== 'true') {
+      return;
+    }
+
+    const sanitized = target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3);
+    target.value = sanitized;
+    submitState = {
+      ...submitState,
+      initials: sanitized,
+    };
+  });
+
+  ensuredOverlayEl.addEventListener('submit', (event) => {
+    const form = event.target as HTMLFormElement | null;
+
+    if (!form || form.dataset.submitForm !== 'true') {
+      return;
+    }
+
+    event.preventDefault();
+
+    const initialsInput = form.querySelector<HTMLInputElement>('[data-initials-input]');
+
+    if (!initialsInput) {
+      return;
+    }
+
+    submitHandlers.forEach((handler) => handler(initialsInput.value));
   });
 
   const setStatus = (text: string): void => {
     statusEl.textContent = text;
-    visibleStatusEl.textContent = text;
   };
 
-  const render = (state: HybridBattleState): void => {
+  const pulseTimer = (bonusTimeMs: number): void => {
+    if (bonusTimeMs <= 0) {
+      return;
+    }
+
+    if (timerPulseTimeout) {
+      window.clearTimeout(timerPulseTimeout);
+    }
+
+    timerBonusEl.hidden = false;
+    timerBonusEl.textContent = `+${formatBonusSeconds(bonusTimeMs)}s`;
+    timerBoxEl.classList.remove('timer-pulse');
+    timerBonusEl.classList.remove('timer-bonus-active');
+
+    void timerBoxEl.offsetWidth;
+
+    timerBoxEl.classList.add('timer-pulse');
+    timerBonusEl.classList.add('timer-bonus-active');
+    timerPulseTimeout = window.setTimeout(() => {
+      timerBoxEl.classList.remove('timer-pulse');
+      timerBonusEl.classList.remove('timer-bonus-active');
+      timerBonusEl.hidden = true;
+      timerPulseTimeout = undefined;
+    }, 860);
+  };
+
+  const render = (state: MatchCrowViewState): void => {
+    currentState = state;
     scoreEl.textContent = state.score.toString().padStart(6, '0');
-    encounterEl.textContent = `Fight ${Math.min(state.encounterIndex + 1, state.encounters.length)} / ${
-      state.encounters.length
-    }`;
-    turnEl.textContent =
-      state.phase === 'player_board_turn'
-        ? 'Board Turn'
-        : state.phase === 'player_special_window'
-          ? 'Special Window'
-          : state.phase === 'enemy_turn'
-            ? 'Enemy Turn'
-            : state.phase === 'reward'
-              ? 'Reward'
-              : state.phase === 'victory'
-                ? 'Victory'
-                : 'Down';
-    playerHpEl.textContent = `${state.player.hp} / ${state.player.maxHp}`;
-    playerGuardEl.textContent = `${state.player.guard}`;
-    playerGritEl.textContent = `${state.player.grit} / ${state.player.maxGrit}`;
-    playerStatusesEl.innerHTML = renderStatuses(state.player.statuses);
-    enemyNameEl.textContent = ENEMY_DEFINITIONS[state.enemy.id].name;
-    enemyHpEl.textContent = `${state.enemy.hp} / ${state.enemy.maxHp}`;
-    enemyGuardEl.textContent = `Guard ${state.enemy.guard}`;
-    enemyIntentEl.textContent =
-      state.phase === 'reward' || state.phase === 'victory'
-        ? 'Choose your next edge.'
-        : state.phase === 'defeat'
-          ? 'The run is over.'
-          : `${state.enemyIntent.label}: ${state.enemyIntent.description}`;
-    enemyStatusesEl.innerHTML = renderStatuses(state.enemy.statuses);
-    setStatus(state.log || DEFAULT_STATUS);
+    highScoreEl.textContent = state.highScore.toString().padStart(6, '0');
+    timerEl.textContent = formatRemainingTime(state.timeRemainingMs);
+    timerBoxEl.dataset.urgent = `${!state.runComplete && state.timeRemainingMs <= 15_000}`;
+    timerBoxEl.dataset.complete = `${state.runComplete}`;
+    statusEl.dataset.complete = `${state.runComplete}`;
+    playfieldFrameEl.dataset.locked = `${state.runComplete}`;
+    setStatus(state.lastMessage || DEFAULT_STATUS);
 
-    specialEls.forEach((button) => {
-      const slotId = button.dataset.special as SpecialSlotId;
-      const special = state.specials[slotId];
-      const definition = SPECIAL_DEFINITIONS[slotId];
-      const disabled =
-        state.phase !== 'player_special_window' ||
-        special.cooldownRemaining > 0 ||
-        state.player.grit < definition.cost;
+    submitButton.hidden = !options.leaderboardSubmitEnabled || !state.leaderboard.canSubmit;
+    submitButton.disabled = !state.leaderboard.canSubmit;
+    submitButton.title = state.leaderboard.submitReason ?? '';
+    leaderboardButton.dataset.enabled = `${options.leaderboardReadEnabled}`;
 
-      button.disabled = disabled;
-      button.dataset.cooldown = special.cooldownRemaining > 0 ? `${special.cooldownRemaining}` : '';
-      button.querySelector('.special-meta')!.textContent =
-        special.cooldownRemaining > 0
-          ? `cd ${special.cooldownRemaining}`
-          : `lv ${special.level} / ${definition.cost} grit`;
-    });
-
-    skipButton.disabled = state.phase !== 'player_special_window';
-    renderOverlay(state, overlayEl, fireRestart, rewardHandlers);
+    renderOverlay();
   };
+
+  const showLeaderboardLoading = (): void => {
+    overlayMode = 'leaderboard';
+    leaderboardState = {
+      ...leaderboardState,
+      status: 'loading',
+      message: '',
+      entries: [],
+      highlightedPlayerId: currentState.leaderboard.playerId,
+    };
+    renderOverlay();
+  };
+
+  const showLeaderboardEntries = (
+    entries: LeaderboardEntry[],
+    highlightedPlayerId: string,
+  ): void => {
+    overlayMode = 'leaderboard';
+    leaderboardState = {
+      status: 'ready',
+      entries,
+      highlightedPlayerId,
+      message: entries.length === 0 ? 'No scores posted yet.' : '',
+    };
+    renderOverlay();
+  };
+
+  const showLeaderboardError = (message: string): void => {
+    overlayMode = 'leaderboard';
+    leaderboardState = {
+      ...leaderboardState,
+      status: 'error',
+      message,
+      entries: [],
+    };
+    renderOverlay();
+  };
+
+  const showLeaderboardUnavailable = (message: string): void => {
+    overlayMode = 'leaderboard';
+    leaderboardState = {
+      ...leaderboardState,
+      status: 'unavailable',
+      message,
+      entries: [],
+    };
+    renderOverlay();
+  };
+
+  const openSubmitDialog = (initials: string): void => {
+    overlayMode = 'submit';
+    submitState = {
+      status: 'idle',
+      initials: initials || currentState.leaderboard.lastSubmittedInitials,
+      message: '',
+    };
+    renderOverlay();
+  };
+
+  const setSubmitBusy = (): void => {
+    submitState = {
+      ...submitState,
+      status: 'submitting',
+      message: 'Submitting...',
+    };
+    renderOverlay();
+  };
+
+  const setSubmitError = (message: string): void => {
+    submitState = {
+      ...submitState,
+      status: 'error',
+      message,
+    };
+    renderOverlay();
+  };
+
+  const setSubmitSuccess = (message: string): void => {
+    submitState = {
+      ...submitState,
+      status: 'success',
+      message,
+    };
+    renderOverlay();
+  };
+
+  const closeOverlay = (): void => {
+    overlayMode = null;
+    overlayEl.hidden = true;
+  };
+
+  function renderOverlay(): void {
+    if (!overlayMode) {
+      ensuredOverlayEl.hidden = true;
+      ensuredOverlayBodyEl.innerHTML = '';
+      return;
+    }
+
+    ensuredOverlayEl.hidden = false;
+
+    if (overlayMode === 'leaderboard') {
+      ensuredOverlayTitleEl.textContent = 'Top 100';
+      ensuredOverlayBodyEl.innerHTML = renderLeaderboardOverlay(leaderboardState);
+      return;
+    }
+
+    ensuredOverlayTitleEl.textContent = 'Submit Score';
+    ensuredOverlayBodyEl.innerHTML = renderSubmitOverlay(submitState, currentState.highScore);
+    const initialsInput = ensuredOverlayBodyEl.querySelector<HTMLInputElement>('[data-initials-input]');
+    initialsInput?.focus();
+    initialsInput?.setSelectionRange(initialsInput.value.length, initialsInput.value.length);
+  }
 
   render(initialState);
 
@@ -257,106 +379,132 @@ export function createHud(root: HTMLDivElement, initialState: HybridBattleState)
     canvasHost,
     render,
     setStatus,
+    pulseTimer,
     onRestart(handler: () => void) {
       restartHandlers.add(handler);
     },
-    onStart(handler: () => void) {
-      startHandlers.add(handler);
+    onOpenLeaderboard(handler: () => void) {
+      openLeaderboardHandlers.add(handler);
     },
-    onSpecial(handler: (slotId: SpecialSlotId) => void) {
-      specialHandlers.add(handler);
+    onRetryLeaderboard(handler: () => void) {
+      retryLeaderboardHandlers.add(handler);
     },
-    onSkip(handler: () => void) {
-      skipHandlers.add(handler);
+    onOpenSubmit(handler: () => void) {
+      openSubmitHandlers.add(handler);
     },
-    onReward(handler: (rewardId: string) => void) {
-      rewardHandlers.add(handler);
+    onSubmitScore(handler: (initials: string) => void) {
+      submitHandlers.add(handler);
     },
+    showLeaderboardLoading,
+    showLeaderboardEntries,
+    showLeaderboardError,
+    showLeaderboardUnavailable,
+    openSubmitDialog,
+    setSubmitBusy,
+    setSubmitError,
+    setSubmitSuccess,
+    closeOverlay,
   };
 }
 
-function renderStatuses(statuses: StatusEffect[]): string {
-  if (statuses.length === 0) {
-    return '<span class="status-chip is-empty">Clear</span>';
+function renderLeaderboardOverlay(state: LeaderboardOverlayState): string {
+  if (state.status === 'loading') {
+    return `<p class="overlay-copy">Loading the top scores...</p>`;
   }
 
-  return statuses
-    .map(
-      (status) =>
-        `<span class="status-chip">${STATUS_LABELS[status.id]} ${status.potency}/${status.duration}</span>`,
-    )
-    .join('');
-}
+  if (state.status === 'unavailable') {
+    return `<p class="overlay-copy">${escapeHtml(state.message || 'Leaderboard is not configured.')}</p>`;
+  }
 
-function renderOverlay(
-  state: HybridBattleState,
-  overlayEl: HTMLDivElement,
-  onRestart: () => void,
-  rewardHandlers: Set<(rewardId: string) => void>,
-): void {
-  if (state.phase === 'reward') {
-    overlayEl.hidden = false;
-    overlayEl.innerHTML = `
-      <div class="overlay-card">
-        <strong class="overlay-title">Pick One Reward</strong>
-        <div class="reward-grid">
-          ${state.rewardOptions.map(renderRewardCard).join('')}
-        </div>
-      </div>
+  if (state.status === 'error') {
+    return `
+      <p class="overlay-copy">${escapeHtml(state.message || 'Could not load scores.')}</p>
+      <button type="button" class="overlay-action" data-retry-leaderboard>Retry</button>
     `;
-
-    overlayEl.querySelectorAll<HTMLButtonElement>('[data-reward]').forEach((button) => {
-      button.addEventListener('click', () => {
-        const rewardId = button.dataset.reward;
-
-        if (!rewardId) {
-          return;
-        }
-
-        rewardHandlers.forEach((handler) => handler(rewardId));
-      });
-    });
-
-    return;
   }
 
-  if (state.phase === 'victory' || state.phase === 'defeat') {
-    overlayEl.hidden = false;
-    overlayEl.innerHTML = `
-      <div class="overlay-card overlay-card-end">
-        <strong class="overlay-title">${
-          state.phase === 'victory' ? 'Run Cleared' : 'Crow Down'
-        }</strong>
-        <p>${state.log}</p>
-        <button type="button" class="start-button overlay-button" data-overlay-restart>
-          ${state.phase === 'victory' ? 'Play Again' : 'Try Again'}
-        </button>
-      </div>
-    `;
-
-    overlayEl
-      .querySelector<HTMLButtonElement>('[data-overlay-restart]')
-      ?.addEventListener('click', onRestart);
-
-    return;
-  }
-
-  overlayEl.hidden = true;
-  overlayEl.innerHTML = '';
-}
-
-function renderRewardCard(option: RewardOption): string {
-  let extra = option.description;
-
-  if (option.kind === 'relic' && option.relicId) {
-    extra = RELIC_DEFINITIONS[option.relicId].description;
+  if (state.entries.length === 0) {
+    return `<p class="overlay-copy">${escapeHtml(state.message || 'No scores posted yet.')}</p>`;
   }
 
   return `
-    <button type="button" class="reward-card" data-reward="${option.id}">
-      <span class="reward-kind">${option.kind}</span>
-      <strong>${option.label}</strong>
-      <span>${extra}</span>
-    </button>
+    <div class="leaderboard-list">
+      ${state.entries
+        .map((entry, index) => {
+          const classes =
+            entry.playerId === state.highlightedPlayerId
+              ? 'leaderboard-row leaderboard-row-local'
+              : 'leaderboard-row';
+
+          return `
+            <div class="${classes}">
+              <span class="leaderboard-rank">${index + 1}</span>
+              <span class="leaderboard-initials">${escapeHtml(entry.initials)}</span>
+              <span class="leaderboard-score">${entry.score.toString().padStart(6, '0')}</span>
+            </div>
+          `;
+        })
+        .join('')}
+    </div>
   `;
+}
+
+function renderSubmitOverlay(state: SubmitOverlayState, highScore: number): string {
+  const statusClass =
+    state.status === 'error'
+      ? 'overlay-message overlay-message-error'
+      : state.status === 'success'
+        ? 'overlay-message overlay-message-success'
+        : 'overlay-message';
+
+  return `
+    <form class="submit-form" data-submit-form="true">
+      <p class="overlay-copy">Post your local best of ${highScore.toString().padStart(6, '0')}.</p>
+      <label class="submit-label" for="submit-initials">Initials</label>
+      <input
+        id="submit-initials"
+        class="submit-input"
+        type="text"
+        inputmode="text"
+        autocomplete="off"
+        autocapitalize="characters"
+        spellcheck="false"
+        maxlength="3"
+        value="${escapeAttribute(state.initials)}"
+        data-initials-input="true"
+      />
+      <p class="${statusClass}">${escapeHtml(state.message || 'Use exactly 3 letters.')}</p>
+      <div class="overlay-actions">
+        <button type="button" class="overlay-action overlay-action-secondary" data-close-overlay>Cancel</button>
+        <button type="submit" class="overlay-action" ${state.status === 'submitting' ? 'disabled' : ''}>
+          ${state.status === 'submitting' ? 'Submitting...' : 'Submit'}
+        </button>
+      </div>
+    </form>
+  `;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function escapeAttribute(value: string): string {
+  return escapeHtml(value);
+}
+
+function formatRemainingTime(timeRemainingMs: number): string {
+  const totalSeconds = Math.ceil(Math.max(0, timeRemainingMs) / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+function formatBonusSeconds(bonusTimeMs: number): string {
+  const seconds = bonusTimeMs / 1000;
+  return Number.isInteger(seconds) ? `${seconds}` : seconds.toFixed(1).replace(/\.0$/, '');
 }

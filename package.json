@@ -3,12 +3,18 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "workspaces": [
+    "functions"
+  ],
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build && npm run build:functions",
+    "build:functions": "npm run build --workspace functions",
     "preview": "vite preview",
     "export:sprites": "python scripts/export_crows_cache_sprites.py",
-    "test": "vitest run"
+    "test": "npm run test:app && npm run test:functions",
+    "test:app": "vitest run",
+    "test:functions": "npm run test --workspace functions"
   },
   "devDependencies": {
     "typescript": "~5.9.3",
@@ -16,6 +22,7 @@
     "vitest": "^4.1.2"
   },
   "dependencies": {
+    "firebase": "^11.10.0",
     "phaser": "^3.90.0"
   }
 }

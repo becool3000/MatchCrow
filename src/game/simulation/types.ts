@@ -77,6 +77,7 @@ export interface BoardResolveStep {
   spawnedTiles: SpawnedTile[];
   payload: BoardCombatPayload;
   scoreDelta: number;
+  bonusTimeMs: number;
   bigMatch: boolean;
 }
 
@@ -96,6 +97,7 @@ export interface BoardResolutionResult {
   steps: BoardResolveStep[];
   totalPayload: BoardCombatPayload;
   totalScoreDelta: number;
+  totalBonusTimeMs: number;
   reshuffled: boolean;
   reshuffleMoves: TileMove[];
 }

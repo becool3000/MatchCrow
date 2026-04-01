@@ -1,22 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import {
-  createBoardStateFromKinds,
-  findMatchGroups,
-  hasLegalMove,
-  initializeBoard,
-  trySwapOnBoard,
-} from './board.ts';
-import {
-  createStateFromKinds,
-  initializeRun,
-  pickReward,
-  skipSpecial,
-  trySwap,
-  useSpecial,
-} from './engine.ts';
+import { findMatchGroups, hasLegalMove, initializeBoard } from './board.ts';
+import { advanceClock, createStateFromKinds, initializeRun, RUN_DURATION_MS, trySwap } from './engine.ts';
 import type { Cell, TileKind } from './types.ts';
 
-describe('MatchCrow hybrid engine', () => {
+describe('MatchCrow match-3 engine', () => {
   it('initializes a board without starting matches and with at least one legal move', () => {
     const board = initializeBoard(createSeededRng(1));
 
@@ -24,22 +11,18 @@ describe('MatchCrow hybrid engine', () => {
     expect(hasLegalMove(board.grid)).toBe(true);
   });
 
-  it('resolves a legal swap into board effects and enters the special window', () => {
-    const state = initializeRun(createSeededRng(2));
-    const swap = findFirstAcceptedSwap(state);
+  it('accepts a valid swap and increases score and high score', () => {
+    const state = createStateFromKinds(buildSingleMatchBoard('coin', 'key'), 10);
+    const swap = trySwap(state, { row: 2, col: 0 }, { row: 2, col: 1 }, createSeededRng(11));
 
-    expect(swap).not.toBeNull();
-
-    if (!swap) {
-      return;
-    }
-
-    expect(swap.result.accepted).toBe(true);
-    expect(swap.result.state.phase).toBe('player_special_window');
-    expect(swap.result.events.some((event) => event.type === 'board_step')).toBe(true);
+    expect(swap.accepted).toBe(true);
+    expect(swap.result?.totalScoreDelta).toBeGreaterThan(0);
+    expect(swap.state.score).toBe(swap.result?.totalScoreDelta);
+    expect(swap.state.highScore).toBe(swap.state.score);
+    expect(swap.state.lastMessage).toContain('Cleared');
   });
 
-  it('rejects an adjacent swap that produces no match without advancing the turn', () => {
+  it('rejects an adjacent swap that does not make a match', () => {
     const state = initializeRun(createSeededRng(3));
     const swap = findFirstRejectedSwap(state);
 
@@ -50,126 +33,44 @@ describe('MatchCrow hybrid engine', () => {
     }
 
     expect(swap.result.accepted).toBe(false);
-    expect(swap.result.state.phase).toBe('player_board_turn');
+    expect(swap.result.state.score).toBe(state.score);
+    expect(swap.result.reason).toBe('That swap does not make a match.');
   });
 
-  it('maps each tile kind to the intended combat payload', () => {
-    const coinResult = trySwapOnBoard(
-      createBoardStateFromKinds(buildSingleMatchBoard('coin', 'key')),
-      { row: 2, col: 0 },
-      { row: 2, col: 1 },
-      createSeededRng(11),
-    );
-    const buttonResult = trySwapOnBoard(
-      createBoardStateFromKinds(buildSingleMatchBoard('button', 'coin')),
-      { row: 2, col: 0 },
-      { row: 2, col: 1 },
-      createSeededRng(12),
-    );
-    const ringResult = trySwapOnBoard(
-      createBoardStateFromKinds(buildSingleMatchBoard('ring', 'trinket')),
-      { row: 2, col: 0 },
-      { row: 2, col: 1 },
-      createSeededRng(13),
-    );
-    const trinketResult = trySwapOnBoard(
-      createBoardStateFromKinds(buildSingleMatchBoard('trinket', 'button')),
-      { row: 2, col: 0 },
-      { row: 2, col: 1 },
-      createSeededRng(14),
-    );
-    const keyResult = trySwapOnBoard(
-      createBoardStateFromKinds(buildSingleMatchBoard('key', 'ring')),
-      { row: 2, col: 0 },
-      { row: 2, col: 1 },
-      createSeededRng(15),
-    );
-
-    expect(coinResult.steps[0]?.payload.damage).toBe(6);
-    expect(buttonResult.steps[0]?.payload.guard).toBe(6);
-    expect(ringResult.steps[0]?.payload.grit).toBe(1);
-    expect(trinketResult.steps[0]?.payload.heal).toBe(6);
-    expect(keyResult.steps[0]?.payload.weakPotency).toBe(1);
-  });
-
-  it('allows a special after the board settles and then resolves the enemy turn', () => {
-    const state = createStateFromKinds(buildSingleMatchBoard('ring', 'coin'));
+  it('updates a saved high score when the current score exceeds it', () => {
+    const state = createStateFromKinds(buildSingleMatchBoard('ring', 'trinket'), 10);
     const swap = trySwap(state, { row: 2, col: 0 }, { row: 2, col: 1 }, createSeededRng(16));
 
     expect(swap.accepted).toBe(true);
-    expect(swap.state.player.grit).toBe(2);
-
-    const special = useSpecial(swap.state, 'feather-flurry', createSeededRng(17));
-
-    expect(special.accepted).toBe(true);
-    expect(special.state.phase).toBe('player_board_turn');
-    expect(special.state.enemy.statuses.some((status) => status.id === 'bleed')).toBe(true);
+    expect(swap.state.score).toBeGreaterThan(10);
+    expect(swap.state.highScore).toBe(swap.state.score);
   });
 
-  it('offers rewards after a non-boss kill and advances to the next encounter', () => {
-    const state = createStateFromKinds(buildSingleMatchBoard('coin', 'key'));
-    state.enemy.hp = 5;
+  it('ends the run when the timer expires and rejects later swaps', () => {
+    const state = initializeRun(createSeededRng(21));
+    const expired = advanceClock(state, RUN_DURATION_MS);
 
-    const victory = trySwap(state, { row: 2, col: 0 }, { row: 2, col: 1 }, createSeededRng(18));
+    expect(expired.state.runComplete).toBe(true);
+    expect(expired.state.timeRemainingMs).toBe(0);
+    expect(expired.state.lastMessage).toContain('Time is up');
 
-    expect(victory.accepted).toBe(true);
-    expect(victory.state.phase).toBe('reward');
-    expect(victory.state.rewardOptions).toHaveLength(3);
+    const swap = trySwap(expired.state, { row: 0, col: 0 }, { row: 0, col: 1 }, createSeededRng(22));
 
-    const reward = pickReward(victory.state, victory.state.rewardOptions[0]!.id, createSeededRng(19));
-
-    expect(reward.accepted).toBe(true);
-    expect(reward.state.phase).toBe('player_board_turn');
-    expect(reward.state.encounterIndex).toBe(1);
-    expect(reward.state.enemy.id).toBe('magpie');
-    expect(findMatchGroups(reward.state.board.grid)).toHaveLength(0);
+    expect(swap.accepted).toBe(false);
+    expect(swap.reason).toContain('Time is up');
+    expect(swap.state.runComplete).toBe(true);
   });
 
-  it('can end in defeat when the enemy answers after the special window', () => {
-    const state = createStateFromKinds(buildSingleMatchBoard('button', 'coin'));
-    state.player.hp = 1;
+  it('awards bonus time for four-tile clears', () => {
+    const state = createStateFromKinds(buildFourMatchBoard('coin', 'key'), 0);
+    const swap = trySwap(state, { row: 2, col: 0 }, { row: 2, col: 1 }, createSeededRng(23));
 
-    const swap = trySwap(state, { row: 2, col: 0 }, { row: 2, col: 1 }, createSeededRng(20));
-    const defeat = skipSpecial(swap.state, createSeededRng(21));
-
-    expect(defeat.accepted).toBe(true);
-    expect(defeat.state.phase).toBe('defeat');
-    expect(defeat.events.some((event) => event.type === 'defeat')).toBe(true);
+    expect(swap.accepted).toBe(true);
+    expect(swap.result?.totalBonusTimeMs).toBe(2_000);
+    expect(swap.state.timeRemainingMs).toBe(RUN_DURATION_MS + (swap.result?.totalBonusTimeMs ?? 0));
+    expect(swap.state.lastMessage).toContain('bonus');
   });
 });
-
-function findFirstAcceptedSwap(state: ReturnType<typeof initializeRun>): {
-  from: Cell;
-  to: Cell;
-  result: ReturnType<typeof trySwap>;
-} | null {
-  for (let row = 0; row < 8; row += 1) {
-    for (let col = 0; col < 8; col += 1) {
-      const directions: Cell[] = [
-        { row, col: col + 1 },
-        { row: row + 1, col },
-      ];
-
-      for (const to of directions) {
-        if (to.row >= 8 || to.col >= 8) {
-          continue;
-        }
-
-        const result = trySwap(state, { row, col }, to, createSeededRng(7));
-
-        if (result.accepted) {
-          return {
-            from: { row, col },
-            to,
-            result,
-          };
-        }
-      }
-    }
-  }
-
-  return null;
-}
 
 function findFirstRejectedSwap(state: ReturnType<typeof initializeRun>): {
   from: Cell;
@@ -223,6 +124,15 @@ function buildSingleMatchBoard(kind: TileKind, blocker: TileKind): TileKind[][] 
   if (rows[3][0] === kind) {
     rows[3][0] = blocker;
   }
+
+  return rows;
+}
+
+function buildFourMatchBoard(kind: TileKind, blocker: TileKind): TileKind[][] {
+  const rows = buildSingleMatchBoard(kind, blocker);
+
+  rows[3][0] = kind;
+  rows[4][0] = blocker;
 
   return rows;
 }

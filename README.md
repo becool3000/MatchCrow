@@ -1,6 +1,6 @@
 # MatchCrow
 
-MatchCrow is a pixel-art hybrid match-3 battler built with Phaser, TypeScript, and Vite.
+MatchCrow is a pixel-art match-3 score chaser built with Phaser, TypeScript, and Vite.
 
 ## Run
 
@@ -8,6 +8,16 @@ MatchCrow is a pixel-art hybrid match-3 battler built with Phaser, TypeScript, a
 npm install
 npm run dev
 ```
+
+## Firebase Leaderboard
+
+The client reads and submits leaderboard scores directly against Firestore.
+
+1. Copy `.env.example` to `.env`
+2. Fill in the Firebase web app values from the Firebase console
+3. Deploy the backend with Firebase CLI
+
+Top-score writes are constrained by `firestore.rules`.
 
 ## Build
 

@@ -87,6 +87,7 @@ export function trySwapOnBoard(
       steps: [],
       totalPayload: createEmptyPayload(),
       totalScoreDelta: 0,
+      totalBonusTimeMs: 0,
       reshuffled: false,
       reshuffleMoves: [],
     };
@@ -104,6 +105,7 @@ export function trySwapOnBoard(
       steps: [],
       totalPayload: createEmptyPayload(),
       totalScoreDelta: 0,
+      totalBonusTimeMs: 0,
       reshuffled: false,
       reshuffleMoves: [],
     };
@@ -112,6 +114,7 @@ export function trySwapOnBoard(
   const steps: BoardResolveStep[] = [];
   const totalPayload = createEmptyPayload();
   let totalScoreDelta = 0;
+  let totalBonusTimeMs = 0;
   let reshuffled = false;
   let reshuffleMoves: TileMove[] = [];
   let stepIndex = 0;
@@ -144,6 +147,7 @@ export function trySwapOnBoard(
     const multiplier = Math.min(3, stepIndex + 1);
     const payload = countsToPayload(clearedCounts, multiplier);
     const scoreDelta = payload.totalCleared * 10;
+    const bonusTimeMs = getBigMatchBonusTimeMs(payload.totalCleared);
 
     totalPayload.damage += payload.damage;
     totalPayload.guard += payload.guard;
@@ -153,6 +157,7 @@ export function trySwapOnBoard(
     totalPayload.totalCleared += payload.totalCleared;
     totalPayload.multiplier = payload.multiplier;
     totalScoreDelta += scoreDelta;
+    totalBonusTimeMs += bonusTimeMs;
 
     steps.push({
       matches,
@@ -163,7 +168,8 @@ export function trySwapOnBoard(
       spawnedTiles,
       payload,
       scoreDelta,
-      bigMatch: payload.totalCleared >= 4,
+      bonusTimeMs,
+      bigMatch: bonusTimeMs > 0,
     });
 
     stepIndex += 1;
@@ -184,6 +190,7 @@ export function trySwapOnBoard(
     steps,
     totalPayload,
     totalScoreDelta,
+    totalBonusTimeMs,
     reshuffled,
     reshuffleMoves,
   };
@@ -369,6 +376,14 @@ function countsToPayload(counts: TileCounts, multiplier: number): BoardCombatPay
     multiplier,
     totalCleared,
   };
+}
+
+function getBigMatchBonusTimeMs(totalCleared: number): number {
+  if (totalCleared < 4) {
+    return 0;
+  }
+
+  return Math.min(4_000, totalCleared * 500);
 }
 
 function createTile(board: BoardState, kind: TileKind): Tile {

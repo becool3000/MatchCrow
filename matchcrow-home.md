@@ -1,0 +1,13 @@
+- main [ref=e4]:
+  - generic [ref=e5]:
+    - generic [ref=e6]: MatchCrow
+    - generic [ref=e7]:
+      - generic [ref=e8]: Score
+      - strong [ref=e9]: "000000"
+    - generic [ref=e10]:
+      - generic [ref=e11]: High
+      - strong [ref=e12]: "000000"
+    - generic [ref=e13]:
+      - button "Top 100" [ref=e14] [cursor=pointer]
+      - button "Reset" [ref=e15] [cursor=pointer]
+  - paragraph [ref=e16]: Swap adjacent shiny tiles to clear matches and chase a high score.

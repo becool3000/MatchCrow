@@ -2,36 +2,35 @@ import Phaser from 'phaser';
 import { CrowsCacheGame } from '../../game/CrowsCacheGame.ts';
 import {
   BOARD_COLORS,
+  BACKGROUND_TEXTURE_KEYS,
   DEFAULT_STATUS,
   FX_TEXTURE_KEYS,
   TILE_TEXTURE_KEYS,
 } from '../../game/assets/manifest.ts';
 import {
-  ENEMY_DEFINITIONS,
   GRID_SIZE,
   type BoardResolveStep,
+  type BoardResolutionResult,
+  type BoardState,
   type Cell,
-  type HybridBattleState,
-  type HybridEvent,
-  type SpecialSlotId,
   type SpawnedTile,
   type Tile,
   type TileMove,
 } from '../../game/simulation/types.ts';
+import type { MatchCrowState } from '../../game/simulation/engine.ts';
 import type { GameHud } from '../../ui/createHud.ts';
 import { CrowActor } from '../view/CrowActor.ts';
-import { EnemyActor } from '../view/EnemyActor.ts';
 import {
   MATCHCROW_POSTFX_PIPELINE_KEY,
   MatchCrowPostFxPipeline,
 } from '../view/MatchCrowPostFxPipeline.ts';
+import { playBigMatchCue, playClearPop } from '../view/MatchCrowSfx.ts';
 
 interface ArenaLayout {
   boardX: number;
   boardY: number;
   boardSize: number;
   tileSize: number;
-  enemyPerch: Phaser.Math.Vector2;
   crowPerch: Phaser.Math.Vector2;
   center: Phaser.Math.Vector2;
 }
@@ -43,36 +42,33 @@ interface DragState {
   pointerId: number;
 }
 
-const FOREST_POINTS = [
-  { x: 0.08, height: 0.28, width: 0.1 },
-  { x: 0.18, height: 0.34, width: 0.14 },
-  { x: 0.34, height: 0.26, width: 0.11 },
-  { x: 0.47, height: 0.38, width: 0.16 },
-  { x: 0.64, height: 0.24, width: 0.12 },
-  { x: 0.78, height: 0.36, width: 0.16 },
-  { x: 0.9, height: 0.28, width: 0.1 },
-] as const;
+interface SparkleBurstOptions {
+  alpha?: number;
+  count?: number;
+  depth?: number;
+  duration?: number;
+  scaleMultiplier?: number;
+  spreadX?: number;
+  spreadY?: number;
+}
 
 export class GameScene extends Phaser.Scene {
   private readonly controller: CrowsCacheGame;
   private readonly hud: GameHud;
-  private currentState: HybridBattleState;
+  private currentState: MatchCrowState;
   private readonly tileSprites = new Map<string, Phaser.GameObjects.Image>();
   private layout: ArenaLayout = {
     boardX: 0,
     boardY: 0,
     boardSize: 0,
     tileSize: 0,
-    enemyPerch: new Phaser.Math.Vector2(0, 0),
     crowPerch: new Phaser.Math.Vector2(0, 0),
     center: new Phaser.Math.Vector2(0, 0),
   };
-  private farForest?: Phaser.GameObjects.Graphics;
-  private nearForest?: Phaser.GameObjects.Graphics;
+  private backgroundImage?: Phaser.GameObjects.Image;
   private arenaGraphics?: Phaser.GameObjects.Graphics;
   private postFx?: MatchCrowPostFxPipeline;
   private crow?: CrowActor;
-  private enemy?: EnemyActor;
   private sparkles: Phaser.GameObjects.Image[] = [];
   private parallaxTarget = 0;
   private parallaxCurrent = 0;
@@ -89,14 +85,16 @@ export class GameScene extends Phaser.Scene {
 
   create(): void {
     this.currentState = this.controller.getState();
-    this.farForest = this.add.graphics().setDepth(-40);
-    this.nearForest = this.add.graphics().setDepth(-30);
+    this.backgroundImage = this.add
+      .image(0, 0, BACKGROUND_TEXTURE_KEYS.duskForest)
+      .setOrigin(0.5)
+      .setDepth(-60)
+      .setScrollFactor(0);
     this.arenaGraphics = this.add.graphics().setDepth(-10);
     this.createSparkles();
     this.installPostFx();
 
     this.crow = new CrowActor(this, new Phaser.Math.Vector2(0, 0));
-    this.enemy = new EnemyActor(this, new Phaser.Math.Vector2(0, 0), this.currentState.enemy.id);
 
     this.input.on('pointerdown', this.handlePointerDown, this);
     this.input.on('pointermove', this.handlePointerMove, this);
@@ -106,107 +104,65 @@ export class GameScene extends Phaser.Scene {
 
     this.handleResize(this.scale.gameSize);
     this.resetBoard(this.currentState.board);
-    this.syncActorsToState(true);
-    this.hud.render(this.currentState);
-    this.hud.setStatus(this.currentState.log || DEFAULT_STATUS);
+    this.syncCrowToState();
+    this.hud.render(this.controller.getViewState());
+    this.hud.setStatus(this.currentState.lastMessage || DEFAULT_STATUS);
 
     this.removeRestartListener = this.controller.onRestart((state) => {
+      this.busy = false;
+      this.clearDragState();
       this.currentState = state;
       this.resetBoard(state.board);
-      this.syncActorsToState(true);
-      this.hud.render(state);
-      this.hud.setStatus(state.log);
+      this.syncCrowToState();
+      this.hud.render(this.controller.getViewState());
+      this.hud.setStatus(state.lastMessage || DEFAULT_STATUS);
     });
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.removeRestartListener?.();
       this.cameras.main.resetPostPipeline();
       this.crow?.destroy();
-      this.enemy?.destroy();
+      this.sparkles.forEach((sparkle) => sparkle.destroy());
+      this.backgroundImage?.destroy();
+      this.arenaGraphics?.destroy();
+      this.clearBoardSprites();
     });
   }
 
-  update(): void {
+  update(_time: number, delta: number): void {
     if (this.postFx) {
       this.postFx.time = this.time.now / 1000;
     }
 
+    if (!this.busy) {
+      const clockUpdate = this.controller.advanceClock(delta);
+
+      if (clockUpdate.changed) {
+        this.currentState = clockUpdate.state;
+
+        if (clockUpdate.displayedSecondChanged || clockUpdate.becameComplete) {
+          this.hud.render(this.controller.getViewState());
+        }
+
+        if (clockUpdate.becameComplete) {
+          this.clearDragState();
+          this.spawnFloatingText('TIME!', this.layout.center, '#ffcf9c');
+          this.cameras.main.flash(180, 255, 210, 160, false);
+          void this.crow?.takeHit();
+        }
+      }
+    }
+
     this.parallaxCurrent = Phaser.Math.Linear(this.parallaxCurrent, this.parallaxTarget, 0.08);
 
-    if (this.farForest) {
-      this.farForest.x = this.parallaxCurrent * 0.45;
+    if (this.backgroundImage) {
+      this.backgroundImage.x = this.layout.center.x + this.parallaxCurrent * 0.12;
+      this.backgroundImage.y = this.layout.center.y - this.layout.boardSize * 0.18;
     }
-
-    if (this.nearForest) {
-      this.nearForest.x = this.parallaxCurrent;
-    }
-  }
-
-  async useSpecial(slotId: SpecialSlotId): Promise<void> {
-    if (this.busy) {
-      return;
-    }
-
-    const result = this.controller.useSpecial(slotId);
-
-    if (!result.accepted) {
-      this.hud.setStatus(result.reason ?? DEFAULT_STATUS);
-      return;
-    }
-
-    this.currentState = result.state;
-    this.busy = true;
-    await this.playEvents(result.events);
-    this.syncActorsToState();
-    this.hud.render(this.currentState);
-    this.hud.setStatus(this.currentState.log);
-    this.busy = false;
-  }
-
-  async skipSpecial(): Promise<void> {
-    if (this.busy) {
-      return;
-    }
-
-    const result = this.controller.skipSpecial();
-
-    if (!result.accepted) {
-      this.hud.setStatus(result.reason ?? DEFAULT_STATUS);
-      return;
-    }
-
-    this.currentState = result.state;
-    this.busy = true;
-    await this.playEvents(result.events);
-    this.syncActorsToState();
-    this.hud.render(this.currentState);
-    this.hud.setStatus(this.currentState.log);
-    this.busy = false;
-  }
-
-  async pickReward(rewardId: string): Promise<void> {
-    if (this.busy) {
-      return;
-    }
-
-    const result = this.controller.pickReward(rewardId);
-
-    if (!result.accepted) {
-      this.hud.setStatus(result.reason ?? DEFAULT_STATUS);
-      return;
-    }
-
-    this.currentState = result.state;
-    this.busy = true;
-    await this.playEvents(result.events);
-    this.syncActorsToState(true);
-    this.hud.render(this.currentState);
-    this.hud.setStatus(this.currentState.log);
-    this.busy = false;
   }
 
   private handlePointerDown(pointer: Phaser.Input.Pointer): void {
-    if (this.busy || this.currentState.phase !== 'player_board_turn') {
+    if (this.busy || this.currentState.runComplete) {
       return;
     }
 
@@ -231,7 +187,12 @@ export class GameScene extends Phaser.Scene {
       18,
     );
 
-    if (!this.dragState || this.dragState.pointerId !== pointer.id || !pointer.isDown) {
+    if (
+      this.currentState.runComplete ||
+      !this.dragState ||
+      this.dragState.pointerId !== pointer.id ||
+      !pointer.isDown
+    ) {
       return;
     }
 
@@ -268,7 +229,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private async performSwap(from: Cell, to: Cell): Promise<void> {
-    if (this.busy) {
+    if (this.busy || this.currentState.runComplete) {
       return;
     }
 
@@ -291,6 +252,7 @@ export class GameScene extends Phaser.Scene {
     const result = this.controller.trySwap(from, to);
 
     if (!result.accepted) {
+      this.currentState = result.state;
       this.hud.setStatus(result.reason ?? DEFAULT_STATUS);
 
       if (result.reason?.includes('match')) {
@@ -307,196 +269,25 @@ export class GameScene extends Phaser.Scene {
       await this.animateAcceptedSwap(firstSprite, secondSprite, result.swap.from, result.swap.to);
     }
 
-    await this.playEvents(result.events);
-    this.resetBoard(this.currentState.board);
-    this.syncActorsToState();
-    this.hud.render(this.currentState);
-    this.hud.setStatus(this.currentState.log);
+    if (result.result) {
+      await this.playBoardResolution(result.result);
+    }
+
+    this.realignBoardSprites(this.currentState.board);
+    this.syncCrowToState();
+    this.hud.render(this.controller.getViewState());
+    this.hud.setStatus(this.currentState.lastMessage);
     this.busy = false;
   }
 
-  private async playEvents(events: HybridEvent[]): Promise<void> {
-    let activeAction: Extract<HybridEvent, { type: 'action' }> | undefined;
-
-    for (const event of events) {
-      if (event.type === 'action') {
-        activeAction = event;
-      }
-
-      switch (event.type) {
-        case 'message':
-          this.hud.setStatus(event.text);
-          await wait(this, 90);
-          break;
-        case 'encounter':
-          this.enemy?.setEnemy(event.enemyId);
-          this.enemy?.restore();
-          this.resetBoard(this.currentState.board);
-          this.emitSparkles(this.layout.enemyPerch);
-          this.spawnFloatingText(
-            ENEMY_DEFINITIONS[event.enemyId].name,
-            this.layout.enemyPerch.clone().add(new Phaser.Math.Vector2(0, -this.layout.tileSize * 1.2)),
-            '#ffe8ae',
-          );
-          await wait(this, 180);
-          break;
-        case 'board_step':
-          await this.animateBoardStep(event.step);
-          break;
-        case 'board_reshuffle':
-          await this.animateReshuffle(event.moves);
-          break;
-        case 'intent':
-          this.hud.setStatus(`Incoming: ${event.intent.label}. ${event.intent.description}`);
-          await wait(this, 90);
-          break;
-        case 'action':
-          await this.playActionLead(event);
-          break;
-        case 'damage':
-          await this.playDamageEvent(event, activeAction);
-          break;
-        case 'heal':
-          await this.playHealEvent(event);
-          break;
-        case 'guard':
-          await this.playGuardEvent(event);
-          break;
-        case 'grit':
-          this.spawnFloatingText(
-            `Grit +${event.amount}`,
-            this.crow?.getFocusPoint() ?? this.layout.crowPerch,
-            '#90f6ff',
-          );
-          await wait(this, 90);
-          break;
-        case 'status':
-          await this.playStatusEvent(event);
-          break;
-        case 'status_tick':
-          await this.playStatusTickEvent(event);
-          break;
-        case 'reward_picked':
-          this.emitFeathers(this.layout.crowPerch);
-          await this.crow?.celebrate();
-          break;
-        case 'reward_ready':
-          this.cameras.main.flash(120, 255, 236, 190);
-          await wait(this, 140);
-          break;
-        case 'victory':
-          await this.enemy?.faint();
-          this.cameras.main.shake(140, 0.003);
-          await this.crow?.celebrate();
-          break;
-        case 'defeat':
-          this.cameras.main.shake(180, 0.004);
-          await this.crow?.takeHit();
-          break;
-      }
-    }
-  }
-
-  private async playActionLead(
-    event: Extract<HybridEvent, { type: 'action' }>,
-  ): Promise<void> {
-    if (event.actor === 'player') {
-      if (event.actionId === 'feather-flurry') {
-        await this.crow?.flyTo(
-          this.enemy?.getFocusPoint().clone().add(new Phaser.Math.Vector2(-18, 4)) ??
-            this.layout.enemyPerch,
-        );
-        return;
-      }
-
-      await this.crow?.hop(8, 200);
-      return;
+  private async playBoardResolution(result: BoardResolutionResult): Promise<void> {
+    for (const step of result.steps) {
+      await this.animateBoardStep(step);
     }
 
-    if (event.actionId === 'burrow' || event.actionId === 'mirror-guard' || event.actionId === 'preen') {
-      await this.enemy?.brace();
-      return;
+    if (result.reshuffled && result.reshuffleMoves.length > 0) {
+      await this.animateReshuffle(result.reshuffleMoves);
     }
-
-    await this.enemy?.strikeAt(this.crow?.getFocusPoint() ?? this.layout.crowPerch);
-  }
-
-  private async playDamageEvent(
-    event: Extract<HybridEvent, { type: 'damage' }>,
-    activeAction?: Extract<HybridEvent, { type: 'action' }>,
-  ): Promise<void> {
-    const point =
-      event.target === 'enemy' ? this.enemy?.getFocusPoint() : this.crow?.getFocusPoint();
-    const color = event.target === 'enemy' ? '#ffcf8d' : '#ff9b92';
-    const blockedText = event.blocked > 0 ? ` (${event.blocked} guard)` : '';
-
-    this.spawnFloatingText(`-${event.amount}${blockedText}`, point ?? this.layout.center, color);
-
-    if (event.target === 'enemy') {
-      await this.enemy?.takeHit();
-
-      if (activeAction?.actor === 'player' && activeAction.actionId === 'feather-flurry') {
-        await this.crow?.returnHome();
-      }
-    } else {
-      await this.crow?.takeHit();
-    }
-
-    this.cameras.main.shake(90, 0.0025);
-  }
-
-  private async playHealEvent(event: Extract<HybridEvent, { type: 'heal' }>): Promise<void> {
-    const point =
-      event.target === 'enemy' ? this.enemy?.getFocusPoint() : this.crow?.getFocusPoint();
-
-    this.spawnFloatingText(`+${event.amount}`, point ?? this.layout.center, '#aff48c');
-
-    if (event.target === 'enemy') {
-      await this.enemy?.brace();
-    } else {
-      await this.crow?.hop(8, 180);
-    }
-  }
-
-  private async playGuardEvent(event: Extract<HybridEvent, { type: 'guard' }>): Promise<void> {
-    const point =
-      event.target === 'enemy' ? this.enemy?.getFocusPoint() : this.crow?.getFocusPoint();
-
-    this.spawnFloatingText(`Guard +${event.amount}`, point ?? this.layout.center, '#90f6ff');
-
-    if (event.target === 'enemy') {
-      await this.enemy?.brace();
-    } else {
-      await this.crow?.hop(7, 180);
-    }
-  }
-
-  private async playStatusEvent(event: Extract<HybridEvent, { type: 'status' }>): Promise<void> {
-    const point =
-      event.target === 'enemy' ? this.enemy?.getFocusPoint() : this.crow?.getFocusPoint();
-
-    this.spawnFloatingText(
-      `${event.statusId.toUpperCase()} ${event.potency}/${event.duration}`,
-      point ?? this.layout.center,
-      '#ffe68a',
-    );
-    await wait(this, 100);
-  }
-
-  private async playStatusTickEvent(
-    event: Extract<HybridEvent, { type: 'status_tick' }>,
-  ): Promise<void> {
-    const point =
-      event.target === 'enemy' ? this.enemy?.getFocusPoint() : this.crow?.getFocusPoint();
-    const prefix = event.statusId === 'bleed' ? '-' : '+';
-    const color = event.statusId === 'bleed' ? '#ff9b92' : '#aff48c';
-
-    this.spawnFloatingText(
-      `${event.statusId.toUpperCase()} ${prefix}${event.amount}`,
-      point ?? this.layout.center,
-      color,
-    );
-    await wait(this, 100);
   }
 
   private async animateBoardStep(step: BoardResolveStep): Promise<void> {
@@ -505,12 +296,40 @@ export class GameScene extends Phaser.Scene {
     if (step.bigMatch) {
       await this.crow?.flyTo(centroid);
       this.emitFeathers(centroid);
-      this.cameras.main.shake(110, 0.0028);
+      this.triggerBigMatchImpact(centroid);
+      await waitMs(78);
+    } else {
+      await this.crow?.hop(6, 180);
+    }
+
+    void playClearPop(this, step.clearedTileIds.length);
+    this.spawnFloatingText(`+${step.scoreDelta}`, centroid, '#ffe68a');
+
+    if (step.bonusTimeMs > 0) {
+      this.spawnFloatingText(
+        `+${formatBonusSeconds(step.bonusTimeMs)}s`,
+        new Phaser.Math.Vector2(centroid.x, centroid.y - this.layout.tileSize * 0.36),
+        '#9ff6ff',
+      );
+      this.hud.pulseTimer(step.bonusTimeMs);
     }
 
     await this.clearMatchedTiles(step.clearedTileIds);
     await this.animateDrops(step.droppedTiles, step.spawnedTiles);
-    this.emitSparkles(centroid);
+    this.emitSparkles(
+      centroid,
+      step.bigMatch
+        ? {
+            alpha: 0.85,
+            count: 6,
+            depth: 54,
+            duration: 320,
+            scaleMultiplier: 1.3,
+            spreadX: 26,
+            spreadY: 24,
+          }
+        : undefined,
+    );
 
     if (step.bigMatch) {
       await this.crow?.returnHome();
@@ -542,10 +361,7 @@ export class GameScene extends Phaser.Scene {
     );
   }
 
-  private async animateDrops(
-    droppedTiles: TileMove[],
-    spawnedTiles: SpawnedTile[],
-  ): Promise<void> {
+  private async animateDrops(droppedTiles: TileMove[], spawnedTiles: SpawnedTile[]): Promise<void> {
     const dropTweens = droppedTiles.map((move) => {
       const sprite = this.tileSprites.get(move.tileId);
 
@@ -651,9 +467,8 @@ export class GameScene extends Phaser.Scene {
     ]);
   }
 
-  private resetBoard(board: HybridBattleState['board']): void {
-    this.tileSprites.forEach((sprite) => sprite.destroy());
-    this.tileSprites.clear();
+  private resetBoard(board: BoardState): void {
+    this.clearBoardSprites();
 
     for (let row = 0; row < GRID_SIZE; row += 1) {
       for (let col = 0; col < GRID_SIZE; col += 1) {
@@ -667,6 +482,32 @@ export class GameScene extends Phaser.Scene {
         this.tileSprites.set(tile.id, sprite);
       }
     }
+  }
+
+  private realignBoardSprites(board: BoardState): void {
+    for (let row = 0; row < GRID_SIZE; row += 1) {
+      for (let col = 0; col < GRID_SIZE; col += 1) {
+        const tile = board.grid[row][col];
+
+        if (!tile) {
+          continue;
+        }
+
+        const sprite = this.tileSprites.get(tile.id);
+
+        if (!sprite) {
+          continue;
+        }
+
+        const point = this.cellToPoint({ row, col });
+        sprite.setPosition(point.x, point.y);
+      }
+    }
+  }
+
+  private clearBoardSprites(): void {
+    this.tileSprites.forEach((sprite) => sprite.destroy());
+    this.tileSprites.clear();
   }
 
   private createSparkles(): void {
@@ -721,25 +562,140 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private emitSparkles(point: Phaser.Math.Vector2): void {
-    for (let index = 0; index < 3; index += 1) {
+  private emitSparkles(point: Phaser.Math.Vector2, options: SparkleBurstOptions = {}): void {
+    const count = options.count ?? 3;
+    const spreadX = options.spreadX ?? 18;
+    const spreadY = options.spreadY ?? 18;
+    const depth = options.depth ?? 48;
+    const alpha = options.alpha ?? 0.7;
+    const duration = options.duration ?? 260;
+    const scaleMultiplier = options.scaleMultiplier ?? 1;
+
+    for (let index = 0; index < count; index += 1) {
       const sparkle = this.add
         .image(point.x, point.y, FX_TEXTURE_KEYS.sparkle)
-        .setDepth(48)
-        .setScale(this.layout.tileSize / 52)
-        .setAlpha(0.7);
+        .setDepth(depth)
+        .setScale((this.layout.tileSize / 52) * scaleMultiplier * (0.94 + index * 0.03))
+        .setAlpha(alpha);
 
       this.tweens.add({
         targets: sparkle,
-        x: point.x + Phaser.Math.Between(-18, 18),
-        y: point.y + Phaser.Math.Between(-18, 10),
+        x: point.x + Phaser.Math.Between(-spreadX, spreadX),
+        y: point.y + Phaser.Math.Between(-spreadY, Math.round(spreadY * 0.55)),
         alpha: 0,
         scale: sparkle.scale * 1.4,
-        duration: 260,
+        duration,
         ease: 'Quad.Out',
         onComplete: () => sparkle.destroy(),
       });
     }
+  }
+
+  private triggerBigMatchImpact(point: Phaser.Math.Vector2): void {
+    this.flashBigMatchArea(point);
+    this.emitSparkles(point, {
+      alpha: 0.95,
+      count: 8,
+      depth: 55,
+      duration: 360,
+      scaleMultiplier: 1.42,
+      spreadX: 30,
+      spreadY: 28,
+    });
+    this.spawnBigMatchCallout('BIG MATCH', point);
+    void playBigMatchCue(this);
+    this.punchCameraZoom();
+    this.cameras.main.shake(140, 0.0042);
+  }
+
+  private flashBigMatchArea(point: Phaser.Math.Vector2): void {
+    const darkener = this.add
+      .rectangle(
+        this.layout.center.x,
+        this.layout.center.y,
+        this.layout.boardSize,
+        this.layout.boardSize,
+        0x0d0814,
+        0.28,
+      )
+      .setDepth(34);
+    const glow = this.add
+      .circle(point.x, point.y, this.layout.tileSize * 0.72, 0xfff1bc, 0.25)
+      .setDepth(35)
+      .setBlendMode(Phaser.BlendModes.SCREEN);
+    const innerRing = this.add
+      .circle(point.x, point.y, this.layout.tileSize * 0.42)
+      .setDepth(36)
+      .setBlendMode(Phaser.BlendModes.SCREEN)
+      .setStrokeStyle(Math.max(2, Math.round(this.layout.tileSize * 0.1)), 0xffffff, 0.92);
+    const outerRing = this.add
+      .circle(point.x, point.y, this.layout.tileSize * 0.82)
+      .setDepth(35)
+      .setBlendMode(Phaser.BlendModes.SCREEN)
+      .setStrokeStyle(Math.max(3, Math.round(this.layout.tileSize * 0.12)), 0xffd76f, 0.84);
+
+    this.tweens.add({
+      targets: [darkener, glow, innerRing, outerRing],
+      alpha: 0,
+      duration: 160,
+      ease: 'Quad.Out',
+      onComplete: () => {
+        darkener.destroy();
+        glow.destroy();
+        innerRing.destroy();
+        outerRing.destroy();
+      },
+    });
+
+    this.tweens.add({
+      targets: [glow, innerRing, outerRing],
+      scale: 1.24,
+      duration: 160,
+      ease: 'Quad.Out',
+    });
+  }
+
+  private spawnBigMatchCallout(
+    text: string,
+    point: Phaser.Math.Vector2,
+    color = '#fff0ae',
+    fontSize = Math.max(16, Math.round(this.layout.tileSize * 0.34)),
+  ): void {
+    const label = this.add
+      .text(point.x, point.y, text, {
+        fontFamily: '"Press Start 2P"',
+        fontSize: `${fontSize}px`,
+        color,
+        align: 'center',
+        stroke: '#160d1b',
+        strokeThickness: 4,
+      })
+      .setOrigin(0.5)
+      .setDepth(64)
+      .setAlpha(0);
+
+    this.tweens.add({
+      targets: label,
+      y: point.y - this.layout.tileSize * 0.52,
+      alpha: 1,
+      duration: 110,
+      ease: 'Quad.Out',
+      yoyo: true,
+      hold: 180,
+      onComplete: () => label.destroy(),
+    });
+  }
+
+  private punchCameraZoom(): void {
+    this.tweens.killTweensOf(this.cameras.main);
+    this.cameras.main.zoom = 1;
+    this.tweens.add({
+      targets: this.cameras.main,
+      zoom: 1.035,
+      duration: 90,
+      ease: 'Quad.Out',
+      yoyo: true,
+    });
   }
 
   private spawnFloatingText(text: string, point: Phaser.Math.Vector2, color: string): void {
@@ -764,40 +720,41 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private syncActorsToState(force = false): void {
-    if (!this.crow || !this.enemy) {
+  private syncCrowToState(): void {
+    if (!this.crow) {
       return;
     }
 
     this.crow.setPerch(this.layout.crowPerch);
     this.crow.setScale(this.layout.tileSize / 16);
-    this.enemy.setPerch(this.layout.enemyPerch);
-    this.enemy.setScale(this.layout.tileSize / 18);
-
-    if (force) {
-      this.enemy.setEnemy(this.currentState.enemy.id);
-      this.enemy.restore();
-    }
   }
 
   private handleResize(gameSize: Phaser.Structs.Size): void {
     const width = gameSize.width;
     const height = gameSize.height;
-    const tileSize = Math.max(28, Math.floor(Math.min(width * 0.105, height * 0.075)));
+    const isCramped = width <= 360 || height <= 420;
+    const isPhone = width <= 520;
+    const horizontalInset = isCramped ? 10 : isPhone ? 14 : 18;
+    const verticalInset = isCramped ? 8 : isPhone ? 12 : 16;
+    const verticalUnits = GRID_SIZE + (isCramped ? 1.9 : isPhone ? 2.1 : 2.35);
+    const widthBound = Math.floor((width - horizontalInset * 2) / GRID_SIZE);
+    const heightBound = Math.floor((height - verticalInset * 2) / verticalUnits);
+    const tileSize = Phaser.Math.Clamp(Math.min(widthBound, heightBound), 20, 64);
     const boardSize = tileSize * GRID_SIZE;
-    let boardY = Math.round(height * 0.22);
-    const minBoardY = Math.round(tileSize * 1.7);
-    const maxBoardY = Math.round(height - boardSize - tileSize * 2.2);
-
-    boardY = Phaser.Math.Clamp(boardY, minBoardY, maxBoardY);
+    const crowBand = tileSize * (isCramped ? 1.7 : isPhone ? 1.9 : 2.05);
+    const contentHeight = boardSize + crowBand;
+    const contentTop = Math.round((height - contentHeight) / 2);
+    const boardY = Math.round(contentTop + tileSize * (isCramped ? 0.72 : isPhone ? 0.82 : 0.92));
 
     this.layout = {
       boardX: Math.round((width - boardSize) / 2),
       boardY,
       boardSize,
       tileSize,
-      enemyPerch: new Phaser.Math.Vector2(Math.round(width / 2), boardY - tileSize * 0.92),
-      crowPerch: new Phaser.Math.Vector2(Math.round(width / 2), boardY + boardSize + tileSize * 0.88),
+      crowPerch: new Phaser.Math.Vector2(
+        Math.round(width / 2),
+        Math.round(boardY + boardSize + tileSize * (isCramped ? 0.34 : isPhone ? 0.4 : 0.48)),
+      ),
       center: new Phaser.Math.Vector2(Math.round(width / 2), Math.round(boardY + boardSize / 2)),
     };
 
@@ -815,70 +772,27 @@ export class GameScene extends Phaser.Scene {
       sprite.setScale(tileSize / 34);
     });
 
-    for (let row = 0; row < GRID_SIZE; row += 1) {
-      for (let col = 0; col < GRID_SIZE; col += 1) {
-        const tile = this.currentState.board.grid[row][col];
-
-        if (!tile) {
-          continue;
-        }
-
-        this.tileSprites.get(tile.id)?.setPosition(
-          this.cellToPoint({ row, col }).x,
-          this.cellToPoint({ row, col }).y,
-        );
-      }
-    }
-
-    this.syncActorsToState(true);
+    this.realignBoardSprites(this.currentState.board);
+    this.syncCrowToState();
   }
 
   private drawBackdrop(width: number, height: number): void {
-    if (!this.farForest || !this.nearForest) {
+    if (!this.backgroundImage) {
       return;
     }
 
     this.cameras.main.setBackgroundColor('#120f1e');
+    const texture = this.textures.get(BACKGROUND_TEXTURE_KEYS.duskForest);
+    const source = texture.getSourceImage() as HTMLImageElement | HTMLCanvasElement | undefined;
 
-    this.farForest.clear();
-    this.farForest.fillGradientStyle(0x21183a, 0x21183a, 0x4e4874, 0x6b6695, 1);
-    this.farForest.fillRect(0, 0, width, height);
-    this.drawForestLayer(this.farForest, width, height, 0x241631, 0.44);
+    if (!source) {
+      return;
+    }
 
-    this.nearForest.clear();
-    this.drawForestLayer(this.nearForest, width, height, 0x1b1026, 0.62);
-  }
+    const scale = Math.max(width / source.width, height / source.height);
 
-  private drawForestLayer(
-    graphics: Phaser.GameObjects.Graphics,
-    width: number,
-    height: number,
-    color: number,
-    alpha: number,
-  ): void {
-    graphics.fillStyle(color, alpha);
-
-    FOREST_POINTS.forEach((point) => {
-      const baseX = width * point.x;
-      const baseY = height;
-      const treeHeight = height * point.height;
-      const treeWidth = width * point.width;
-
-      graphics.fillTriangle(
-        baseX,
-        baseY - treeHeight,
-        baseX - treeWidth,
-        baseY,
-        baseX + treeWidth,
-        baseY,
-      );
-      graphics.fillRect(
-        baseX - treeWidth * 0.08,
-        baseY - treeHeight * 0.2,
-        treeWidth * 0.16,
-        treeHeight * 0.24,
-      );
-    });
+    this.backgroundImage.setDisplaySize(source.width * scale, source.height * scale);
+    this.backgroundImage.setPosition(width / 2, height / 2);
   }
 
   private drawArena(width: number, height: number): void {
@@ -886,34 +800,39 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    const { boardX, boardY, boardSize, tileSize, enemyPerch, crowPerch, center } = this.layout;
+    const { boardX, boardY, boardSize, tileSize, crowPerch, center } = this.layout;
+    const pixel = Math.max(4, Math.floor(tileSize / 4));
 
     this.arenaGraphics.clear();
     this.arenaGraphics.fillStyle(0x8b7ab1, 0.18);
-    this.arenaGraphics.fillEllipse(center.x, center.y, boardSize * 1.34, boardSize * 1.1);
+    this.arenaGraphics.fillRect(
+      Math.round(center.x - boardSize * 0.68),
+      Math.round(center.y - boardSize * 0.56),
+      Math.round(boardSize * 1.36),
+      Math.round(boardSize * 1.12),
+    );
 
     this.arenaGraphics.fillStyle(
       Phaser.Display.Color.HexStringToColor(BOARD_COLORS.fill).color,
       0.92,
     );
-    this.arenaGraphics.fillRoundedRect(
-      boardX - tileSize * 0.4,
-      boardY - tileSize * 0.4,
-      boardSize + tileSize * 0.8,
-      boardSize + tileSize * 0.8,
-      tileSize * 0.28,
+    this.arenaGraphics.fillRect(
+      Math.round(boardX - tileSize * 0.4),
+      Math.round(boardY - tileSize * 0.4),
+      Math.round(boardSize + tileSize * 0.8),
+      Math.round(boardSize + tileSize * 0.8),
     );
     this.arenaGraphics.fillStyle(
       Phaser.Display.Color.HexStringToColor(BOARD_COLORS.inner).color,
       1,
     );
-    this.arenaGraphics.fillRoundedRect(boardX, boardY, boardSize, boardSize, tileSize * 0.18);
+    this.arenaGraphics.fillRect(boardX, boardY, boardSize, boardSize);
     this.arenaGraphics.lineStyle(
-      4,
+      Math.max(3, pixel),
       Phaser.Display.Color.HexStringToColor(BOARD_COLORS.border).color,
       1,
     );
-    this.arenaGraphics.strokeRoundedRect(boardX, boardY, boardSize, boardSize, tileSize * 0.18);
+    this.arenaGraphics.strokeRect(boardX, boardY, boardSize, boardSize);
 
     for (let row = 0; row < GRID_SIZE; row += 1) {
       for (let col = 0; col < GRID_SIZE; col += 1) {
@@ -921,21 +840,24 @@ export class GameScene extends Phaser.Scene {
         const y = boardY + row * tileSize;
         const cellColor = (row + col) % 2 === 0 ? BOARD_COLORS.cell : BOARD_COLORS.cellShadow;
         this.arenaGraphics.fillStyle(Phaser.Display.Color.HexStringToColor(cellColor).color, 0.86);
-        this.arenaGraphics.fillRoundedRect(
-          x + tileSize * 0.06,
-          y + tileSize * 0.06,
-          tileSize * 0.88,
-          tileSize * 0.88,
-          tileSize * 0.18,
+        this.arenaGraphics.fillRect(
+          Math.round(x + tileSize * 0.06),
+          Math.round(y + tileSize * 0.06),
+          Math.round(tileSize * 0.88),
+          Math.round(tileSize * 0.88),
         );
       }
     }
 
-    this.drawPerch(enemyPerch, tileSize, BOARD_COLORS.enemyPerch, BOARD_COLORS.enemyPerchShadow);
     this.drawPerch(crowPerch, tileSize, BOARD_COLORS.playerPerch, BOARD_COLORS.playerPerchShadow);
 
-    this.arenaGraphics.fillStyle(0xfce59a, 0.14);
-    this.arenaGraphics.fillCircle(width * 0.78, Math.max(tileSize * 1.2, height * 0.12), tileSize * 0.75);
+    this.drawPixelGlow(
+      Math.round(width * 0.78),
+      Math.round(Math.max(tileSize * 1.2, height * 0.12)),
+      Math.max(tileSize * 0.68, 16),
+      0xfce59a,
+      0.14,
+    );
   }
 
   private drawPerch(
@@ -949,9 +871,45 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.arenaGraphics.fillStyle(Phaser.Display.Color.HexStringToColor(shadow).color, 0.95);
-    this.arenaGraphics.fillEllipse(perch.x, perch.y + tileSize * 0.12, tileSize * 1.12, tileSize * 0.34);
+    this.arenaGraphics.fillRect(
+      Math.round(perch.x - tileSize * 0.56),
+      Math.round(perch.y + tileSize * 0.08),
+      Math.round(tileSize * 1.12),
+      Math.round(tileSize * 0.22),
+    );
     this.arenaGraphics.fillStyle(Phaser.Display.Color.HexStringToColor(fill).color, 1);
-    this.arenaGraphics.fillEllipse(perch.x, perch.y + tileSize * 0.04, tileSize * 1.02, tileSize * 0.26);
+    this.arenaGraphics.fillRect(
+      Math.round(perch.x - tileSize * 0.5),
+      Math.round(perch.y),
+      Math.round(tileSize),
+      Math.round(tileSize * 0.16),
+    );
+  }
+
+  private drawPixelGlow(
+    x: number,
+    y: number,
+    size: number,
+    color: number,
+    alpha: number,
+  ): void {
+    if (!this.arenaGraphics) {
+      return;
+    }
+
+    const block = Math.max(4, Math.round(size / 4));
+    const half = Math.round(size / 2);
+
+    this.arenaGraphics.fillStyle(color, alpha);
+    for (let row = -half; row <= half; row += block) {
+      for (let col = -half; col <= half; col += block) {
+        if (Math.abs(row) + Math.abs(col) > size) {
+          continue;
+        }
+
+        this.arenaGraphics.fillRect(x + col, y + row, block, block);
+      }
+    }
   }
 
   private installPostFx(): void {
@@ -999,13 +957,25 @@ export class GameScene extends Phaser.Scene {
   }
 
   private isInsideBoard(cell: Cell): boolean {
-    return (
-      cell.row >= 0 &&
-      cell.row < GRID_SIZE &&
-      cell.col >= 0 &&
-      cell.col < GRID_SIZE
-    );
+    return cell.row >= 0 && cell.row < GRID_SIZE && cell.col >= 0 && cell.col < GRID_SIZE;
   }
+}
+
+function getCentroid(points: Phaser.Math.Vector2[]): Phaser.Math.Vector2 {
+  if (points.length === 0) {
+    return new Phaser.Math.Vector2(0, 0);
+  }
+
+  const total = points.reduce(
+    (accumulator, point) => {
+      accumulator.x += point.x;
+      accumulator.y += point.y;
+      return accumulator;
+    },
+    { x: 0, y: 0 },
+  );
+
+  return new Phaser.Math.Vector2(total.x / points.length, total.y / points.length);
 }
 
 function tweenPromise(
@@ -1020,21 +990,13 @@ function tweenPromise(
   });
 }
 
-function wait(scene: Phaser.Scene, time: number): Promise<void> {
+function waitMs(duration: number): Promise<void> {
   return new Promise((resolve) => {
-    scene.time.delayedCall(time, () => resolve());
+    window.setTimeout(resolve, duration);
   });
 }
 
-function getCentroid(points: Phaser.Math.Vector2[]): Phaser.Math.Vector2 {
-  const total = points.reduce(
-    (accumulator, point) => {
-      accumulator.x += point.x;
-      accumulator.y += point.y;
-      return accumulator;
-    },
-    new Phaser.Math.Vector2(0, 0),
-  );
-
-  return total.scale(1 / Math.max(points.length, 1));
+function formatBonusSeconds(bonusTimeMs: number): string {
+  const seconds = bonusTimeMs / 1_000;
+  return Number.isInteger(seconds) ? `${seconds}` : seconds.toFixed(1).replace(/\.0$/, '');
 }
