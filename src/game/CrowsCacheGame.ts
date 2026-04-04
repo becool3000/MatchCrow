@@ -7,12 +7,20 @@ import {
   type MatchCrowResolution,
   type MatchCrowState,
 } from './simulation/engine.ts';
-import type { Cell, TileKind } from './simulation/types.ts';
+import type { Cell, RunTilePool, TileKind } from './simulation/types.ts';
+import { getProgressionState, getRunXpForScore, type MatchCrowProgressionState } from './progression.ts';
+import {
+  getTileDefinition,
+  getUnlocksBetweenLevels,
+  getUnlockedTileDefinitions,
+  pickRunTilePool,
+} from './tileCatalog.ts';
 import { getSubmitEligibility, normalizeInitials } from '../services/leaderboard.ts';
 
 type RestartListener = (state: MatchCrowState) => void;
 
 const HIGH_SCORE_STORAGE_KEY = 'matchcrow.high-score';
+const TOTAL_XP_STORAGE_KEY = 'matchcrow.total-xp';
 const PLAYER_ID_STORAGE_KEY = 'matchcrow.player-id';
 const LAST_SUBMITTED_SCORE_STORAGE_KEY = 'matchcrow.last-submitted-score';
 const LAST_SUBMITTED_INITIALS_STORAGE_KEY = 'matchcrow.last-submitted-initials';
@@ -25,8 +33,16 @@ export interface MatchCrowLeaderboardState {
   submitReason?: string;
 }
 
+export interface MatchCrowUnlockState {
+  runTilePool: RunTilePool;
+  unlockedTileKinds: TileKind[];
+  newlyUnlockedTileKinds: TileKind[];
+}
+
 export interface MatchCrowViewState extends MatchCrowState {
   leaderboard: MatchCrowLeaderboardState;
+  progression: MatchCrowProgressionState;
+  unlocks: MatchCrowUnlockState;
 }
 
 export class CrowsCacheGame {
@@ -34,17 +50,25 @@ export class CrowsCacheGame {
   private state: MatchCrowState;
   private readonly restartListeners = new Set<RestartListener>();
   private highScore = 0;
+  private totalXp = 0;
   private readonly playerId: string;
   private lastSubmittedScore: number;
   private lastSubmittedInitials: string;
+  private runProgressCommitted = false;
+  private newlyUnlockedTileKinds: TileKind[] = [];
 
   constructor(rng: () => number = Math.random) {
     this.rng = rng;
     this.highScore = readNumber(HIGH_SCORE_STORAGE_KEY);
+    this.totalXp = readNumber(TOTAL_XP_STORAGE_KEY);
     this.playerId = readOrCreatePlayerId();
     this.lastSubmittedScore = readNumber(LAST_SUBMITTED_SCORE_STORAGE_KEY);
     this.lastSubmittedInitials = readString(LAST_SUBMITTED_INITIALS_STORAGE_KEY);
-    this.state = initializeRun(this.rng, this.highScore);
+    this.state = initializeRun(
+      this.rng,
+      this.highScore,
+      pickRunTilePool(getProgressionState(this.totalXp).level, this.rng),
+    );
   }
 
   getState(): MatchCrowState {
@@ -52,6 +76,7 @@ export class CrowsCacheGame {
   }
 
   getViewState(): MatchCrowViewState {
+    const progression = getProgressionState(this.totalXp);
     const submitEligibility = getSubmitEligibility(this.state.highScore, this.lastSubmittedScore);
     const canSubmit = submitEligibility.canSubmit && this.state.runComplete;
     const submitReason = canSubmit
@@ -69,6 +94,12 @@ export class CrowsCacheGame {
         canSubmit,
         submitReason,
       },
+      progression,
+      unlocks: {
+        runTilePool: this.state.runTilePool,
+        unlockedTileKinds: getUnlockedTileDefinitions(progression.level).map((definition) => definition.kind),
+        newlyUnlockedTileKinds: [...this.newlyUnlockedTileKinds],
+      },
     };
   }
 
@@ -77,9 +108,25 @@ export class CrowsCacheGame {
 
     if (result.changed) {
       this.state = result.state;
+
+      if (result.becameComplete) {
+        const newlyUnlockedTileKinds = this.commitRunProgress();
+
+        if (newlyUnlockedTileKinds.length > 0) {
+          this.state = {
+            ...this.state,
+            lastMessage: buildLevelUpStatusMessage(newlyUnlockedTileKinds),
+          };
+        }
+      }
     }
 
-    return result;
+    return result.changed
+      ? {
+          ...result,
+          state: this.state,
+        }
+      : result;
   }
 
   trySwap(from: Cell, to: Cell): MatchCrowResolution {
@@ -94,8 +141,15 @@ export class CrowsCacheGame {
   }
 
   restart(): MatchCrowState {
+    this.commitRunProgress();
     this.highScore = Math.max(this.highScore, this.state.highScore);
-    this.state = initializeRun(this.rng, this.highScore);
+    this.state = initializeRun(
+      this.rng,
+      this.highScore,
+      pickRunTilePool(getProgressionState(this.totalXp).level, this.rng),
+    );
+    this.runProgressCommitted = false;
+    this.newlyUnlockedTileKinds = [];
     this.restartListeners.forEach((listener) => listener(this.state));
     this.syncHighScore();
     return this.state;
@@ -110,7 +164,7 @@ export class CrowsCacheGame {
   }
 
   createStateFromKinds(kinds: TileKind[][]): MatchCrowState {
-    return createStateFromKinds(kinds, this.highScore);
+    return createStateFromKinds(kinds, this.highScore, this.state.runTilePool);
   }
 
   recordSubmittedScore(initials: string, score: number): void {
@@ -135,6 +189,38 @@ export class CrowsCacheGame {
     this.highScore = this.state.highScore;
     writeNumber(HIGH_SCORE_STORAGE_KEY, this.highScore);
   }
+
+  private commitRunProgress(): TileKind[] {
+    if (this.runProgressCommitted) {
+      return [...this.newlyUnlockedTileKinds];
+    }
+
+    this.runProgressCommitted = true;
+    this.newlyUnlockedTileKinds = [];
+    const previousLevel = getProgressionState(this.totalXp).level;
+    const awardedXp = getRunXpForScore(this.state.score);
+
+    if (awardedXp <= 0) {
+      return [];
+    }
+
+    this.totalXp += awardedXp;
+    writeNumber(TOTAL_XP_STORAGE_KEY, this.totalXp);
+    this.newlyUnlockedTileKinds = getUnlocksBetweenLevels(previousLevel, getProgressionState(this.totalXp).level).map(
+      (definition) => definition.kind,
+    );
+    return [...this.newlyUnlockedTileKinds];
+  }
+}
+
+function buildLevelUpStatusMessage(tileKinds: TileKind[]): string {
+  const labels = tileKinds.map((kind) => getTileDefinition(kind).label);
+
+  if (labels.length === 1) {
+    return `Level Up! New tile unlocked for next run: ${labels[0]}.`;
+  }
+
+  return `Level Up! New tiles unlocked for next run: ${labels.join(', ')}.`;
 }
 
 function readNumber(storageKey: string): number {

@@ -4,6 +4,12 @@ import { CrowsCacheGame } from './game/CrowsCacheGame.ts';
 import { BootScene } from './phaser/scenes/BootScene.ts';
 import { GameScene } from './phaser/scenes/GameScene.ts';
 import {
+  exportCrowCawPreset,
+  getCrowCawTuning,
+  resetCrowCawTuning,
+  updateCrowCawTuning,
+} from './phaser/view/MatchCrowSfx.ts';
+import {
   canReadRemoteLeaderboard,
   canSubmitRemoteScore,
   fetchTopScores,
@@ -24,6 +30,7 @@ const leaderboardSubmitEnabled = canSubmitRemoteScore();
 const hud = createHud(app, controller.getViewState(), {
   leaderboardReadEnabled,
   leaderboardSubmitEnabled,
+  initialCrowCawTuning: getCrowCawTuning(),
 });
 const gameScene = new GameScene(controller, hud);
 
@@ -129,6 +136,67 @@ hud.onSubmitScore((initials) => {
     });
 });
 
+hud.onOpenCawLab(() => {
+  hud.openCawLab(getCrowCawTuning());
+});
+
+hud.onPreviewCaw(() => {
+  void gameScene.previewCrowCaw();
+});
+
+hud.onUpdateCawTuning((patch) => {
+  updateCrowCawTuning(patch);
+});
+
+hud.onResetCawTuning(() => {
+  const tuning = resetCrowCawTuning();
+  hud.syncCawLab(tuning);
+  void gameScene.previewCrowCaw();
+});
+
+hud.onExportCawPreset((tuning) => {
+  void copyTextToClipboard(exportCrowCawPreset(tuning))
+    .then(() => {
+      hud.setCawLabMessage(
+        'Preset copied. Replace the DEFAULT_CROW_CAW_TUNING block in MatchCrowSfx.ts.',
+        'success',
+      );
+    })
+    .catch(() => {
+      hud.setCawLabMessage(
+        'Clipboard copy failed. Try again from a focused browser tab.',
+        'error',
+      );
+    });
+});
+
 window.addEventListener('beforeunload', () => {
   game.destroy(true);
 });
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  textarea.style.pointerEvents = 'none';
+  document.body.append(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+
+  try {
+    const copied = document.execCommand('copy');
+
+    if (!copied) {
+      throw new Error('copy command failed');
+    }
+  } finally {
+    textarea.remove();
+  }
+}

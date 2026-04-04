@@ -202,9 +202,23 @@ button {
   text-shadow: 0 0 8px rgba(144, 246, 255, 0.42);
 }
 
+.stat-box-detail {
+  display: block;
+  margin-top: 0.28rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-style: normal;
+  line-height: 1;
+}
+
 .stat-box-timer strong {
   color: var(--accent);
   text-shadow: 0 0 8px rgba(255, 230, 138, 0.3);
+}
+
+.stat-box-level strong {
+  color: #bff39f;
+  text-shadow: 0 0 8px rgba(191, 243, 159, 0.3);
 }
 
 .stat-box-timer {
@@ -320,6 +334,16 @@ button {
   letter-spacing: 0.08em;
 }
 
+.hud-button-secondary {
+  border-color: #4f3d64;
+  background:
+    linear-gradient(180deg, #6f5893 0 35%, #563c72 35% 100%);
+  color: #fff6da;
+  box-shadow:
+    inset 0 -4px 0 #452d5e,
+    0 5px 0 rgba(24, 12, 33, 0.74);
+}
+
 .hud-button[hidden] {
   display: none;
 }
@@ -400,6 +424,10 @@ button {
     max(0.75rem, env(safe-area-inset-left));
   background: rgba(11, 7, 16, 0.72);
   backdrop-filter: blur(4px);
+}
+
+.overlay-shell[data-mode='collection'] .overlay-card {
+  width: min(100%, 52rem);
 }
 
 .overlay-card {
@@ -493,6 +521,10 @@ button {
   margin-top: 0.75rem;
 }
 
+.overlay-actions-spread {
+  justify-content: space-between;
+}
+
 .overlay-action-secondary,
 .overlay-close {
   border-color: #4f3d64;
@@ -565,6 +597,262 @@ button {
   font-family: var(--font-display);
   font-size: 1rem;
   letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.caw-lab {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.caw-lab-actions {
+  margin-top: 0;
+}
+
+.caw-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.caw-control {
+  display: grid;
+  gap: 0.28rem;
+  padding: 0.48rem 0.52rem 0.44rem;
+  border: 3px solid #4f3d64;
+  background:
+    linear-gradient(180deg, #503367 0 8px, var(--panel-soft) 8px 100%);
+}
+
+.caw-control-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.caw-control-label,
+.caw-control-value {
+  line-height: 1;
+}
+
+.caw-control-label {
+  font-family: var(--font-display);
+  font-size: 0.5rem;
+  letter-spacing: 0.08em;
+  color: #fff6da;
+}
+
+.caw-control-value {
+  color: var(--accent);
+  font-size: 0.96rem;
+  text-align: right;
+}
+
+.caw-slider,
+.caw-select {
+  width: 100%;
+}
+
+.caw-slider {
+  accent-color: #ffcf73;
+}
+
+.caw-select {
+  padding: 0.42rem 0.5rem 0.35rem;
+  border: 3px solid #4f3d64;
+  background: #16101f;
+  color: #fff6da;
+  font-family: var(--font-display);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+}
+
+.collection-screen,
+.collection-summary,
+.collection-groups,
+.collection-active-grid,
+.collection-roadmap,
+.collection-tile-grid,
+.collection-badges {
+  display: grid;
+}
+
+.collection-screen {
+  gap: 0.75rem;
+}
+
+.collection-summary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.collection-groups {
+  gap: 0.65rem;
+}
+
+.collection-panel {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.6rem 0.65rem 0.56rem;
+  border: 3px solid #4f3d64;
+  background:
+    linear-gradient(180deg, #503367 0 8px, var(--panel-soft) 8px 100%);
+}
+
+.collection-kicker,
+.collection-group-note,
+.collection-level-value,
+.collection-roadmap-level,
+.collection-roadmap-name {
+  margin: 0;
+  line-height: 1;
+}
+
+.collection-kicker,
+.collection-group-note,
+.collection-roadmap-level {
+  font-family: var(--font-display);
+  letter-spacing: 0.08em;
+}
+
+.collection-kicker {
+  color: var(--accent);
+  font-size: 0.58rem;
+}
+
+.collection-group-head,
+.collection-level-row,
+.collection-roadmap-row,
+.collection-tile-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.collection-group-head,
+.collection-level-row,
+.collection-roadmap-row {
+  justify-content: space-between;
+}
+
+.collection-group-note,
+.collection-level-detail,
+.collection-roadmap-role,
+.collection-tile-copy span {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.collection-level-value,
+.collection-roadmap-name,
+.collection-tile-copy strong {
+  font-family: var(--font-display);
+  color: #fff6da;
+}
+
+.collection-level-value {
+  font-size: 0.8rem;
+}
+
+.collection-progress {
+  position: relative;
+  height: 0.9rem;
+  border: 3px solid #4f3d64;
+  background: #16101f;
+  overflow: hidden;
+}
+
+.collection-progress-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #8ed55e 0%, #ffe68a 100%);
+}
+
+.collection-active-grid,
+.collection-tile-grid {
+  gap: 0.45rem;
+}
+
+.collection-active-grid {
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+}
+
+.collection-roadmap {
+  gap: 0.34rem;
+}
+
+.collection-roadmap-row {
+  padding: 0.42rem 0.46rem 0.34rem;
+  border: 2px solid #4f3d64;
+  background: rgba(18, 11, 26, 0.42);
+}
+
+.collection-roadmap-row[data-unlocked='true'] {
+  border-color: #7a4c16;
+  background: rgba(122, 76, 22, 0.16);
+}
+
+.collection-roadmap-level {
+  color: var(--accent);
+  font-size: 0.5rem;
+}
+
+.collection-roadmap-name {
+  flex: 1 1 auto;
+  font-size: 0.62rem;
+}
+
+.collection-roadmap-role {
+  text-align: right;
+}
+
+.collection-tile-grid {
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+}
+
+.collection-tile-card {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.48rem 0.5rem 0.42rem;
+  border: 2px solid #4f3d64;
+  background: rgba(18, 11, 26, 0.42);
+}
+
+.collection-tile-head {
+  align-items: center;
+}
+
+.collection-tile-sprite {
+  width: 2rem;
+  height: 2rem;
+  image-rendering: pixelated;
+  flex: 0 0 auto;
+}
+
+.collection-tile-copy {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.collection-tile-copy strong {
+  font-size: 0.62rem;
+}
+
+.collection-badges {
+  grid-template-columns: repeat(auto-fit, minmax(0, max-content));
+  gap: 0.28rem;
+}
+
+.collection-badge {
+  padding: 0.26rem 0.36rem 0.2rem;
+  border: 2px solid #7a4c16;
+  background: rgba(255, 179, 71, 0.12);
+  color: #fff6da;
+  font-family: var(--font-display);
+  font-size: 0.44rem;
+  letter-spacing: 0.06em;
+  line-height: 1;
   text-transform: uppercase;
 }
 
@@ -656,6 +944,19 @@ button {
   .overlay-copy,
   .overlay-message {
     font-size: 0.96rem;
+  }
+
+  .caw-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .collection-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .collection-active-grid,
+  .collection-tile-grid {
+    grid-template-columns: 1fr;
   }
 }
 

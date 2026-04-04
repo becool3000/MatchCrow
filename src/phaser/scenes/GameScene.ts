@@ -24,7 +24,7 @@ import {
   MATCHCROW_POSTFX_PIPELINE_KEY,
   MatchCrowPostFxPipeline,
 } from '../view/MatchCrowPostFxPipeline.ts';
-import { playBigMatchCue, playClearPop } from '../view/MatchCrowSfx.ts';
+import { playBigMatchCue, playClearPop, playCrowTweet } from '../view/MatchCrowSfx.ts';
 
 interface ArenaLayout {
   boardX: number;
@@ -81,6 +81,14 @@ export class GameScene extends Phaser.Scene {
     this.controller = controller;
     this.hud = hud;
     this.currentState = controller.getState();
+  }
+
+  previewCrowCaw(): Promise<void> {
+    if (!this.sys.isActive()) {
+      return Promise.resolve();
+    }
+
+    return playCrowTweet(this);
   }
 
   create(): void {

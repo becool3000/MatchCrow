@@ -1,6 +1,23 @@
 export const GRID_SIZE = 8;
 
-export const TILE_KINDS = ['key', 'coin', 'ring', 'button', 'trinket'] as const;
+export const TILE_ROLES = ['weak', 'damage', 'grit', 'guard', 'heal'] as const;
+export const TILE_KINDS = [
+  'key',
+  'coin',
+  'ring',
+  'button',
+  'trinket',
+  'gem',
+  'thimble',
+  'medal',
+  'berry',
+  'pin',
+  'star',
+  'shell',
+  'compass',
+  'acorn',
+  'hourglass',
+] as const;
 export const STATUS_EFFECT_IDS = ['bleed', 'focus', 'weak', 'regen'] as const;
 export const SPECIAL_SLOT_IDS = ['feather-flurry', 'second-wind'] as const;
 export const ENCOUNTER_ORDER = ['mole', 'magpie', 'toad', 'owl'] as const;
@@ -12,6 +29,7 @@ export const RELIC_IDS = [
   'thorn-charm',
 ] as const;
 
+export type TileRole = (typeof TILE_ROLES)[number];
 export type TileKind = (typeof TILE_KINDS)[number];
 export type StatusEffectId = (typeof STATUS_EFFECT_IDS)[number];
 export type SpecialSlotId = (typeof SPECIAL_SLOT_IDS)[number];
@@ -39,6 +57,15 @@ export interface Tile {
 }
 
 export type TileCounts = Record<TileKind, number>;
+export type TileRoleCounts = Record<TileRole, number>;
+
+export interface RunTilePool {
+  weak: TileKind;
+  damage: TileKind;
+  grit: TileKind;
+  guard: TileKind;
+  heal: TileKind;
+}
 
 export interface MatchGroup {
   kind: TileKind;
@@ -73,6 +100,7 @@ export interface BoardResolveStep {
   clearedCells: Cell[];
   clearedTileIds: string[];
   clearedCounts: TileCounts;
+  clearedRoleCounts: TileRoleCounts;
   droppedTiles: TileMove[];
   spawnedTiles: SpawnedTile[];
   payload: BoardCombatPayload;

@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { CROW_TEXTURE_KEYS } from '../../game/assets/manifest.ts';
+import { playCrowTweet } from './MatchCrowSfx.ts';
 
 export class CrowActor {
   private readonly scene: Phaser.Scene;
@@ -7,6 +8,7 @@ export class CrowActor {
   private perch = new Phaser.Math.Vector2();
   private baseScale = 1;
   private idleTween?: Phaser.Tweens.Tween;
+  private activeTextureKey = CROW_TEXTURE_KEYS.idleA;
 
   constructor(scene: Phaser.Scene, perch: Phaser.Math.Vector2) {
     this.scene = scene;
@@ -16,6 +18,13 @@ export class CrowActor {
       .setDepth(50);
     this.sprite.postFX.addGlow(0xffe1a4, 0.45, 0.08, false, 0.12, 8);
     this.ensureIdleAnimation();
+    this.sprite.on(
+      Phaser.Animations.Events.ANIMATION_UPDATE,
+      (
+        _animation: Phaser.Animations.Animation,
+        frame: Phaser.Animations.AnimationFrame,
+      ) => this.handleTextureActivated(frame.textureKey),
+    );
     this.setPerch(perch);
     this.startIdle();
   }
@@ -41,7 +50,7 @@ export class CrowActor {
   async flyTo(target: Phaser.Math.Vector2): Promise<void> {
     this.stopIdle();
     this.sprite.stop();
-    this.sprite.setTexture(CROW_TEXTURE_KEYS.fly);
+    this.setTexture(CROW_TEXTURE_KEYS.fly);
     this.sprite.setFlipX(target.x > this.sprite.x);
 
     await tweenPromise(this.scene, {
@@ -55,7 +64,7 @@ export class CrowActor {
 
   async returnHome(): Promise<void> {
     this.sprite.stop();
-    this.sprite.setTexture(CROW_TEXTURE_KEYS.fly);
+    this.setTexture(CROW_TEXTURE_KEYS.fly);
     this.sprite.setFlipX(this.perch.x > this.sprite.x);
 
     await tweenPromise(this.scene, {
@@ -71,7 +80,7 @@ export class CrowActor {
 
   async hop(height = 10, duration = 240): Promise<void> {
     this.stopIdle();
-    this.sprite.setTexture(CROW_TEXTURE_KEYS.idleB);
+    this.setTexture(CROW_TEXTURE_KEYS.idleB);
 
     await tweenPromise(this.scene, {
       targets: this.sprite,
@@ -107,7 +116,7 @@ export class CrowActor {
 
   async celebrate(): Promise<void> {
     this.stopIdle();
-    this.sprite.setTexture(CROW_TEXTURE_KEYS.idleB);
+    this.setTexture(CROW_TEXTURE_KEYS.idleB);
 
     await tweenPromise(this.scene, {
       targets: this.sprite,
@@ -129,7 +138,7 @@ export class CrowActor {
 
   private startIdle(): void {
     this.stopIdle();
-    this.sprite.setTexture(CROW_TEXTURE_KEYS.idleA);
+    this.setTexture(CROW_TEXTURE_KEYS.idleA);
     this.sprite.setAngle(0);
     this.sprite.setAlpha(1);
     this.sprite.setScale(this.baseScale);
@@ -165,6 +174,23 @@ export class CrowActor {
       frameRate: 0.25,
       repeat: -1,
     });
+  }
+
+  private setTexture(textureKey: string): void {
+    this.sprite.setTexture(textureKey);
+    this.handleTextureActivated(textureKey);
+  }
+
+  private handleTextureActivated(textureKey: string): void {
+    if (this.activeTextureKey === textureKey) {
+      return;
+    }
+
+    this.activeTextureKey = textureKey;
+
+    if (textureKey === CROW_TEXTURE_KEYS.idleB) {
+      void playCrowTweet(this.scene);
+    }
   }
 }
 

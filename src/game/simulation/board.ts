@@ -1,20 +1,29 @@
 import {
   GRID_SIZE,
   TILE_KINDS,
+  TILE_ROLES,
   type BoardCombatPayload,
   type BoardResolutionResult,
   type BoardResolveStep,
   type BoardState,
   type Cell,
   type MatchGroup,
+  type RunTilePool,
   type SpawnedTile,
   type Tile,
   type TileCounts,
   type TileKind,
   type TileMove,
+  type TileRoleCounts,
 } from './types.ts';
+import { DEFAULT_RUN_TILE_POOL, getRunPoolKinds, TILE_KIND_TO_ROLE } from '../tileCatalog.ts';
 
-export function initializeBoard(rng: () => number = Math.random): BoardState {
+export function initializeBoard(
+  rng: () => number = Math.random,
+  runTilePool: RunTilePool = DEFAULT_RUN_TILE_POOL,
+): BoardState {
+  const activeKinds = getRunPoolKinds(runTilePool);
+
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const board: BoardState = {
       grid: Array.from({ length: GRID_SIZE }, () => Array<Tile | null>(GRID_SIZE).fill(null)),
@@ -37,7 +46,7 @@ export function initializeBoard(rng: () => number = Math.random): BoardState {
           excluded.add(upA);
         }
 
-        const kind = pickKind(excluded, rng);
+        const kind = pickKind(excluded, activeKinds, rng);
         board.grid[row][col] = createTile(board, kind);
       }
     }
@@ -77,6 +86,7 @@ export function trySwapOnBoard(
   from: Cell,
   to: Cell,
   rng: () => number = Math.random,
+  runTilePool: RunTilePool = DEFAULT_RUN_TILE_POOL,
 ): BoardResolutionResult {
   if (!isOrthogonallyAdjacent(from, to)) {
     return {
@@ -129,6 +139,7 @@ export function trySwapOnBoard(
     const clearedCells = collectClearedCells(matches);
     const clearedTileIds: string[] = [];
     const clearedCounts = createEmptyCounts();
+    const clearedRoleCounts = createEmptyRoleCounts();
 
     clearedCells.forEach((cell) => {
       const tile = working.grid[cell.row][cell.col];
@@ -139,13 +150,14 @@ export function trySwapOnBoard(
 
       clearedTileIds.push(tile.id);
       clearedCounts[tile.kind] += 1;
+      clearedRoleCounts[TILE_KIND_TO_ROLE[tile.kind]] += 1;
       working.grid[cell.row][cell.col] = null;
     });
 
     const droppedTiles = applyGravity(working.grid);
-    const spawnedTiles = refillBoard(working, rng);
+    const spawnedTiles = refillBoard(working, rng, runTilePool);
     const multiplier = Math.min(3, stepIndex + 1);
-    const payload = countsToPayload(clearedCounts, multiplier);
+    const payload = countsToPayload(clearedRoleCounts, multiplier);
     const scoreDelta = payload.totalCleared * 10;
     const bonusTimeMs = getBigMatchBonusTimeMs(payload.totalCleared);
 
@@ -164,6 +176,7 @@ export function trySwapOnBoard(
       clearedCells,
       clearedTileIds,
       clearedCounts,
+      clearedRoleCounts,
       droppedTiles,
       spawnedTiles,
       payload,
@@ -342,13 +355,11 @@ export function kindsFromGrid(grid: (Tile | null)[][]): (TileKind | null)[][] {
 }
 
 export function createEmptyCounts(): TileCounts {
-  return {
-    key: 0,
-    coin: 0,
-    ring: 0,
-    button: 0,
-    trinket: 0,
-  };
+  return Object.fromEntries(TILE_KINDS.map((kind) => [kind, 0])) as TileCounts;
+}
+
+export function createEmptyRoleCounts(): TileRoleCounts {
+  return Object.fromEntries(TILE_ROLES.map((role) => [role, 0])) as TileRoleCounts;
 }
 
 function createEmptyPayload(): BoardCombatPayload {
@@ -363,16 +374,16 @@ function createEmptyPayload(): BoardCombatPayload {
   };
 }
 
-function countsToPayload(counts: TileCounts, multiplier: number): BoardCombatPayload {
+function countsToPayload(counts: TileRoleCounts, multiplier: number): BoardCombatPayload {
   const totalCleared = Object.values(counts).reduce((sum, value) => sum + value, 0);
-  const baseGrit = counts.ring > 0 ? Math.max(1, Math.floor(counts.ring / 3)) : 0;
+  const baseGrit = counts.grit > 0 ? Math.max(1, Math.floor(counts.grit / 3)) : 0;
 
   return {
-    damage: counts.coin * 2 * multiplier,
-    guard: counts.button * 2 * multiplier,
+    damage: counts.damage * 2 * multiplier,
+    guard: counts.guard * 2 * multiplier,
     grit: baseGrit * multiplier,
-    heal: counts.trinket * 2 * multiplier,
-    weakPotency: Math.ceil(counts.key / 3) * multiplier,
+    heal: counts.heal * 2 * multiplier,
+    weakPotency: Math.ceil(counts.weak / 3) * multiplier,
     multiplier,
     totalCleared,
   };
@@ -397,9 +408,9 @@ function createTile(board: BoardState, kind: TileKind): Tile {
   return tile;
 }
 
-function pickKind(excluded: Set<TileKind>, rng: () => number): TileKind {
-  const candidates = TILE_KINDS.filter((kind) => !excluded.has(kind));
-  return candidates[Math.floor(rng() * candidates.length)] ?? TILE_KINDS[0];
+function pickKind(excluded: Set<TileKind>, activeKinds: TileKind[], rng: () => number): TileKind {
+  const candidates = activeKinds.filter((kind) => !excluded.has(kind));
+  return candidates[Math.floor(rng() * candidates.length)] ?? activeKinds[0];
 }
 
 function isOrthogonallyAdjacent(from: Cell, to: Cell): boolean {
@@ -467,8 +478,13 @@ function applyGravity(grid: (Tile | null)[][]): TileMove[] {
   return moves;
 }
 
-function refillBoard(board: BoardState, rng: () => number): SpawnedTile[] {
+function refillBoard(
+  board: BoardState,
+  rng: () => number,
+  runTilePool: RunTilePool = DEFAULT_RUN_TILE_POOL,
+): SpawnedTile[] {
   const spawned: SpawnedTile[] = [];
+  const activeKinds = getRunPoolKinds(runTilePool);
 
   for (let col = 0; col < GRID_SIZE; col += 1) {
     let emptyRows = 0;
@@ -480,7 +496,7 @@ function refillBoard(board: BoardState, rng: () => number): SpawnedTile[] {
     }
 
     for (let row = 0; row < emptyRows; row += 1) {
-      const tile = createTile(board, pickKind(new Set(), rng));
+      const tile = createTile(board, pickKind(new Set(), activeKinds, rng));
       board.grid[row][col] = tile;
       spawned.push({
         tile,

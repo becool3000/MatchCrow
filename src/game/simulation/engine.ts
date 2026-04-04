@@ -1,4 +1,5 @@
 import { DEFAULT_STATUS } from '../assets/manifest.ts';
+import { DEFAULT_RUN_TILE_POOL } from '../tileCatalog.ts';
 import {
   createBoardStateFromKinds,
   initializeBoard,
@@ -8,6 +9,7 @@ import type {
   BoardResolutionResult,
   BoardState,
   Cell,
+  RunTilePool,
   TileKind,
 } from './types.ts';
 
@@ -16,6 +18,7 @@ const RUN_COMPLETE_STATUS = 'Time is up. Reset to start another 1:00 run.';
 
 export interface MatchCrowState {
   board: BoardState;
+  runTilePool: RunTilePool;
   score: number;
   highScore: number;
   lastMessage: string;
@@ -44,9 +47,11 @@ export interface MatchCrowClockResult {
 export function initializeRun(
   rng: () => number = Math.random,
   highScore = 0,
+  runTilePool: RunTilePool = DEFAULT_RUN_TILE_POOL,
 ): MatchCrowState {
   return {
-    board: initializeBoard(rng),
+    board: initializeBoard(rng, runTilePool),
+    runTilePool,
     score: 0,
     highScore,
     lastMessage: DEFAULT_STATUS,
@@ -58,9 +63,11 @@ export function initializeRun(
 export function createStateFromKinds(
   kinds: TileKind[][],
   highScore = 0,
+  runTilePool: RunTilePool = DEFAULT_RUN_TILE_POOL,
 ): MatchCrowState {
   return {
     board: createBoardStateFromKinds(kinds),
+    runTilePool,
     score: 0,
     highScore,
     lastMessage: DEFAULT_STATUS,
@@ -133,7 +140,7 @@ export function trySwap(
     };
   }
 
-  const boardResult = trySwapOnBoard(currentState.board, from, to, rng);
+  const boardResult = trySwapOnBoard(currentState.board, from, to, rng, currentState.runTilePool);
 
   if (!boardResult.accepted) {
     return {

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { findMatchGroups, hasLegalMove, initializeBoard } from './board.ts';
+import { findMatchGroups, hasLegalMove, initializeBoard, kindsFromGrid } from './board.ts';
 import { advanceClock, createStateFromKinds, initializeRun, RUN_DURATION_MS, trySwap } from './engine.ts';
 import type { Cell, TileKind } from './types.ts';
+import { buildRunTilePool } from '../tileCatalog.ts';
 
 describe('MatchCrow match-3 engine', () => {
   it('initializes a board without starting matches and with at least one legal move', () => {
@@ -69,6 +70,39 @@ describe('MatchCrow match-3 engine', () => {
     expect(swap.result?.totalBonusTimeMs).toBe(2_000);
     expect(swap.state.timeRemainingMs).toBe(RUN_DURATION_MS + (swap.result?.totalBonusTimeMs ?? 0));
     expect(swap.state.lastMessage).toContain('bonus');
+  });
+
+  it('uses only the active run pool when a board is initialized', () => {
+    const runTilePool = buildRunTilePool({
+      weak: 'hourglass',
+      damage: 'star',
+      grit: 'compass',
+      guard: 'shell',
+      heal: 'acorn',
+    });
+    const board = initializeBoard(createSeededRng(5), runTilePool);
+    const activeKinds = new Set(Object.values(runTilePool));
+    const usedKinds = new Set(kindsFromGrid(board.grid).flat().filter((kind): kind is TileKind => kind !== null));
+
+    expect([...usedKinds].every((kind) => activeKinds.has(kind))).toBe(true);
+    expect(findMatchGroups(board.grid)).toHaveLength(0);
+    expect(hasLegalMove(board.grid)).toBe(true);
+  });
+
+  it('applies the same payload for variant tiles with the same role', () => {
+    const runTilePool = buildRunTilePool({
+      weak: 'pin',
+      damage: 'gem',
+    });
+    const state = createStateFromKinds(buildSingleMatchBoard('gem', 'pin'), 0, runTilePool);
+    const swap = trySwap(state, { row: 2, col: 0 }, { row: 2, col: 1 }, createSeededRng(31));
+
+    expect(swap.accepted).toBe(true);
+    expect(swap.result?.steps[0]?.clearedCounts.gem).toBe(3);
+    expect(swap.result?.steps[0]?.clearedRoleCounts.damage).toBe(3);
+    expect(swap.result?.totalPayload.damage).toBe(6);
+    expect(swap.result?.totalPayload.guard).toBe(0);
+    expect(swap.result?.totalPayload.heal).toBe(0);
   });
 });
 
