@@ -19,10 +19,23 @@ function validateSubmitHighScoreInput(input) {
     if (!Number.isSafeInteger(score) || score < 0) {
         throw new Error('Score must be a non-negative integer.');
     }
+    if (!Number.isSafeInteger(input.level) || input.level < 1) {
+        throw new Error('Level must be a positive integer.');
+    }
+    if (!Number.isSafeInteger(input.battleReached) || input.battleReached < 1) {
+        throw new Error('Battle reached must be a positive integer.');
+    }
+    if (!Number.isSafeInteger(input.loopCount) || input.loopCount < 0) {
+        throw new Error('Loop count must be a non-negative integer.');
+    }
     return {
         playerId,
         initials,
         score,
+        level: input.level,
+        battleReached: input.battleReached,
+        loopCount: input.loopCount,
+        endedBy: input.endedBy,
     };
 }
 function resolveStoredLeaderboardEntry(existing, incoming) {
@@ -32,6 +45,10 @@ function resolveStoredLeaderboardEntry(existing, incoming) {
                 playerId: incoming.playerId,
                 initials: incoming.initials,
                 score: incoming.score,
+                level: incoming.level,
+                battleReached: incoming.battleReached,
+                loopCount: incoming.loopCount,
+                endedBy: incoming.endedBy,
             },
             result: {
                 accepted: true,
@@ -47,6 +64,10 @@ function resolveStoredLeaderboardEntry(existing, incoming) {
                 playerId: existing.playerId,
                 initials: incoming.initials,
                 score: incoming.score,
+                level: incoming.level,
+                battleReached: incoming.battleReached,
+                loopCount: incoming.loopCount,
+                endedBy: incoming.endedBy,
             },
             result: {
                 accepted: true,

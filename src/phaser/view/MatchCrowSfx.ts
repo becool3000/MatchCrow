@@ -4,6 +4,8 @@ type WebAudioManager = Phaser.Sound.WebAudioSoundManager & {
   context?: AudioContext;
 };
 
+const SOUND_EFFECTS_STORAGE_KEY = 'matchcrow.sound-effects-enabled';
+
 export const CROW_CAW_WAVEFORMS = ['sine', 'triangle', 'sawtooth', 'square'] as const;
 
 export type CrowCawWaveform = (typeof CROW_CAW_WAVEFORMS)[number];
@@ -32,16 +34,26 @@ export interface CrowCawTuning {
 
 const NOISE_BUFFER_SECONDS = 0.05;
 const noiseBufferCache = new WeakMap<BaseAudioContext, AudioBuffer>();
+const CUE_COMPRESSOR_THRESHOLD_DB = -28;
+const CUE_COMPRESSOR_KNEE_DB = 28;
+const CUE_COMPRESSOR_RATIO = 6;
+const CUE_COMPRESSOR_ATTACK_SEC = 0.0025;
+const CUE_COMPRESSOR_RELEASE_SEC = 0.16;
+const BIG_MATCH_CUE_GAIN = 3.2;
+const CLEAR_POP_CUE_GAIN = 4.1;
+const IMPACT_CUE_GAIN = 4.2;
+const SUPPORT_CUE_GAIN = 3.25;
+const CROW_CAW_CUE_GAIN = 2.1;
 // Paste Caw Lab exports here by replacing this entire constant block.
 const DEFAULT_CROW_CAW_TUNING: CrowCawTuning = {
   noiseMs: 20,
-  noiseGain: 0.013,
+  noiseGain: 0.018,
   attackMs: 40,
   bodyMs: 320,
   leadWave: 'sawtooth',
   bodyWave: 'sawtooth',
-  leadGain: 0.004,
-  bodyGain: 0.004,
+  leadGain: 0.0065,
+  bodyGain: 0.0065,
   leadFreq: 511,
   bodyFreq: 260,
   endFreq: 320,
@@ -56,6 +68,17 @@ const DEFAULT_CROW_CAW_TUNING: CrowCawTuning = {
 };
 
 let crowCawTuning: CrowCawTuning = { ...DEFAULT_CROW_CAW_TUNING };
+let soundEffectsEnabled = readStoredAudioEnabled(SOUND_EFFECTS_STORAGE_KEY, true);
+
+export function areSoundEffectsEnabled(): boolean {
+  return soundEffectsEnabled;
+}
+
+export function setSoundEffectsEnabled(enabled: boolean): boolean {
+  soundEffectsEnabled = enabled;
+  writeStoredAudioEnabled(SOUND_EFFECTS_STORAGE_KEY, enabled);
+  return soundEffectsEnabled;
+}
 
 export function getCrowCawTuning(): CrowCawTuning {
   return { ...crowCawTuning };
@@ -139,6 +162,10 @@ export function updateCrowCawTuning(patch: Partial<CrowCawTuning>): CrowCawTunin
 }
 
 export async function playBigMatchCue(scene: Phaser.Scene): Promise<void> {
+  if (!soundEffectsEnabled) {
+    return;
+  }
+
   const context = getAudioContext(scene);
 
   if (!context) {
@@ -150,16 +177,24 @@ export async function playBigMatchCue(scene: Phaser.Scene): Promise<void> {
   }
 
   const now = context.currentTime;
-  const riseLead = createVoice(context, 'triangle', now + 0.015, 0.32, 0.1);
-  riseLead.oscillator.frequency.setValueAtTime(360, now + 0.015);
-  riseLead.oscillator.frequency.exponentialRampToValueAtTime(820, now + 0.335);
+  const bus = createCueBus(context, BIG_MATCH_CUE_GAIN, 1.4);
+  const riseLead = createVoice(context, 'triangle', now + 0.01, 0.34, 0.34, bus.input);
+  riseLead.oscillator.frequency.setValueAtTime(460, now + 0.01);
+  riseLead.oscillator.frequency.exponentialRampToValueAtTime(1120, now + 0.33);
 
-  const riseHarmony = createVoice(context, 'square', now + 0.045, 0.24, 0.045);
-  riseHarmony.oscillator.frequency.setValueAtTime(270, now + 0.045);
-  riseHarmony.oscillator.frequency.exponentialRampToValueAtTime(540, now + 0.285);
+  const riseHarmony = createVoice(context, 'square', now + 0.04, 0.28, 0.2, bus.input);
+  riseHarmony.oscillator.frequency.setValueAtTime(330, now + 0.04);
+  riseHarmony.oscillator.frequency.exponentialRampToValueAtTime(760, now + 0.28);
+
+  createNoiseBurst(context, now + 0.015, 0.045, 0.055, bus.input, 1);
+  scheduleDisconnection(context, now + 0.48, bus.input, bus.compressor, bus.output);
 }
 
 export async function playClearPop(scene: Phaser.Scene, clearedTileCount: number): Promise<void> {
+  if (!soundEffectsEnabled) {
+    return;
+  }
+
   const context = getAudioContext(scene);
 
   if (!context) {
@@ -171,13 +206,93 @@ export async function playClearPop(scene: Phaser.Scene, clearedTileCount: number
   }
 
   const now = context.currentTime;
-  const peakGain = Math.min(0.06, 0.025 + clearedTileCount * 0.0045);
-  const pop = createVoice(context, 'triangle', now, 0.085, peakGain);
-  pop.oscillator.frequency.setValueAtTime(210, now);
-  pop.oscillator.frequency.exponentialRampToValueAtTime(96, now + 0.085);
+  const bus = createCueBus(context, CLEAR_POP_CUE_GAIN, 1.55);
+  const peakGain = Math.min(0.48, 0.18 + clearedTileCount * 0.035);
+  const pop = createVoice(context, 'square', now, 0.14, peakGain, bus.input);
+  pop.oscillator.frequency.setValueAtTime(560, now);
+  pop.oscillator.frequency.exponentialRampToValueAtTime(220, now + 0.14);
+  createNoiseBurst(context, now, 0.04, 0.06, bus.input, 1);
+  scheduleDisconnection(context, now + 0.22, bus.input, bus.compressor, bus.output);
+}
+
+export async function playCombatImpactCue(
+  scene: Phaser.Scene,
+  intensity = 1,
+): Promise<void> {
+  if (!soundEffectsEnabled) {
+    return;
+  }
+
+  const context = getAudioContext(scene);
+
+  if (!context) {
+    return;
+  }
+
+  if (context.state === 'suspended') {
+    await context.resume().catch(() => undefined);
+  }
+
+  const now = context.currentTime;
+  const bus = createCueBus(context, IMPACT_CUE_GAIN, 1.45);
+  const strength = Phaser.Math.Clamp(intensity, 0.6, 2);
+  const thump = createVoice(context, 'sawtooth', now, 0.13, 0.26 * strength, bus.input, 0.008);
+  thump.oscillator.frequency.setValueAtTime(280, now);
+  thump.oscillator.frequency.exponentialRampToValueAtTime(980, now + 0.09);
+
+  const snap = createVoice(context, 'triangle', now + 0.012, 0.09, 0.18 * strength, bus.input, 0.004);
+  snap.oscillator.frequency.setValueAtTime(920, now + 0.012);
+  snap.oscillator.frequency.exponentialRampToValueAtTime(360, now + 0.09);
+
+  createNoiseBurst(context, now, 0.05, 0.075 * strength, bus.input, 1);
+  scheduleDisconnection(context, now + 0.2, bus.input, bus.compressor, bus.output);
+}
+
+export async function playSupportCue(
+  scene: Phaser.Scene,
+  kind: 'shield' | 'heal',
+  intensity = 1,
+): Promise<void> {
+  if (!soundEffectsEnabled) {
+    return;
+  }
+
+  const context = getAudioContext(scene);
+
+  if (!context) {
+    return;
+  }
+
+  if (context.state === 'suspended') {
+    await context.resume().catch(() => undefined);
+  }
+
+  const now = context.currentTime;
+  const bus = createCueBus(context, SUPPORT_CUE_GAIN, 1.3);
+  const strength = Phaser.Math.Clamp(intensity, 0.6, 2);
+
+  if (kind === 'shield') {
+    const ping = createVoice(context, 'triangle', now, 0.16, 0.22 * strength, bus.input, 0.01);
+    ping.oscillator.frequency.setValueAtTime(540, now);
+    ping.oscillator.frequency.exponentialRampToValueAtTime(1040, now + 0.14);
+    const ping2 = createVoice(context, 'sine', now + 0.02, 0.12, 0.14 * strength, bus.input, 0.006);
+    ping2.oscillator.frequency.setValueAtTime(780, now + 0.02);
+    ping2.oscillator.frequency.exponentialRampToValueAtTime(1320, now + 0.12);
+  } else {
+    const rise = createVoice(context, 'sine', now, 0.18, 0.2 * strength, bus.input, 0.02);
+    rise.oscillator.frequency.setValueAtTime(430, now);
+    rise.oscillator.frequency.exponentialRampToValueAtTime(940, now + 0.16);
+    createNoiseBurst(context, now + 0.01, 0.05, 0.04 * strength, bus.input, 1);
+  }
+
+  scheduleDisconnection(context, now + 0.24, bus.input, bus.compressor, bus.output);
 }
 
 export async function playCrowTweet(scene: Phaser.Scene): Promise<void> {
+  if (!soundEffectsEnabled) {
+    return;
+  }
+
   const context = getAudioContext(scene);
 
   if (!context) {
@@ -195,10 +310,10 @@ export async function playCrowTweet(scene: Phaser.Scene): Promise<void> {
   const attackTime = tuning.attackMs / 1000;
   const bodyDuration = (tuning.bodyMs / 1000) * durationJitter;
   const endTime = startTime + bodyDuration + 0.05;
+  const bus = createCueBus(context, CROW_CAW_CUE_GAIN);
   const rasp = context.createWaveShaper();
   const bodyBandpass = context.createBiquadFilter();
   const bodyLowpass = context.createBiquadFilter();
-  const masterGain = context.createGain();
 
   rasp.curve = createDistortionCurve(tuning.raspAmount);
   rasp.oversample = '2x';
@@ -219,12 +334,9 @@ export async function playCrowTweet(scene: Phaser.Scene): Promise<void> {
     startTime + bodyDuration,
   );
 
-  masterGain.gain.value = 0.9;
-
   bodyBandpass.connect(bodyLowpass);
   bodyLowpass.connect(rasp);
-  rasp.connect(masterGain);
-  masterGain.connect(context.destination);
+  rasp.connect(bus.input);
 
   createNoiseBurst(
     context,
@@ -275,7 +387,7 @@ export async function playCrowTweet(scene: Phaser.Scene): Promise<void> {
   );
   cawBody.oscillator.detune.setValueAtTime(tuning.detuneCents, startTime + 0.006);
 
-  scheduleDisconnection(context, endTime, bodyBandpass, bodyLowpass, rasp, masterGain);
+  scheduleDisconnection(context, endTime, bodyBandpass, bodyLowpass, rasp, bus.input, bus.compressor);
 }
 
 function createVoice(
@@ -344,6 +456,30 @@ function createNoiseBurst(
     filter.disconnect();
     gain.disconnect();
   };
+}
+
+function createCueBus(context: AudioContext, gainValue: number, makeupGainValue = 1): {
+  input: GainNode;
+  compressor: DynamicsCompressorNode;
+  output: GainNode;
+} {
+  const input = context.createGain();
+  const compressor = context.createDynamicsCompressor();
+  const output = context.createGain();
+
+  input.gain.value = gainValue;
+  compressor.threshold.value = CUE_COMPRESSOR_THRESHOLD_DB;
+  compressor.knee.value = CUE_COMPRESSOR_KNEE_DB;
+  compressor.ratio.value = CUE_COMPRESSOR_RATIO;
+  compressor.attack.value = CUE_COMPRESSOR_ATTACK_SEC;
+  compressor.release.value = CUE_COMPRESSOR_RELEASE_SEC;
+  output.gain.value = makeupGainValue;
+
+  input.connect(compressor);
+  compressor.connect(output);
+  output.connect(context.destination);
+
+  return { input, compressor, output };
 }
 
 function getNoiseBuffer(context: AudioContext): AudioBuffer {
@@ -426,4 +562,34 @@ function getAudioContext(scene: Phaser.Scene): AudioContext | undefined {
   }
 
   return undefined;
+}
+
+function readStoredAudioEnabled(storageKey: string, fallback: boolean): boolean {
+  try {
+    if (typeof window === 'undefined') {
+      return fallback;
+    }
+
+    const rawValue = window.localStorage.getItem(storageKey);
+
+    if (rawValue === null) {
+      return fallback;
+    }
+
+    return rawValue !== 'false';
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStoredAudioEnabled(storageKey: string, enabled: boolean): void {
+  try {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.setItem(storageKey, enabled ? 'true' : 'false');
+  } catch {
+    // Ignore storage failures.
+  }
 }

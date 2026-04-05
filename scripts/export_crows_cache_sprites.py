@@ -344,9 +344,268 @@ SPRITES = [
 ]
 
 
+def make_canvas(size: int) -> list[list[str]]:
+    return [["." for _ in range(size)] for _ in range(size)]
+
+
+def paint_rect(
+    canvas: list[list[str]],
+    token: str,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+) -> None:
+    size = len(canvas)
+
+    for row in range(max(0, y), min(size, y + height)):
+        for col in range(max(0, x), min(size, x + width)):
+            canvas[row][col] = token
+
+
+def paint_ellipse(
+    canvas: list[list[str]],
+    token: str,
+    cx: int,
+    cy: int,
+    rx: int,
+    ry: int,
+) -> None:
+    size = len(canvas)
+    rx2 = max(1, rx * rx)
+    ry2 = max(1, ry * ry)
+
+    for row in range(size):
+        for col in range(size):
+            dx = col - cx
+            dy = row - cy
+            if (dx * dx) / rx2 + (dy * dy) / ry2 <= 1.0:
+                canvas[row][col] = token
+
+
+def canvas_to_rows(
+    canvas: list[list[str]],
+    palette: dict[str, str],
+) -> list[list[tuple[int, int, int, int]]]:
+    return [
+        [to_rgba(palette.get(token)) for token in row]
+        for row in canvas
+    ]
+
+
+ENEMY_SPRITES = [
+    {
+        "filename": "enemies/mite.png",
+        "palette": {
+            "A": "#2b1721",
+            "B": "#81606f",
+            "C": "#d7a07e",
+            "D": "#fff0aa",
+            "E": "#b2e7ff",
+        },
+        "ops": [
+            ("ellipse", "A", 16, 17, 9, 7),
+            ("ellipse", "B", 16, 17, 7, 5),
+            ("ellipse", "C", 9, 13, 4, 5),
+            ("ellipse", "C", 23, 13, 4, 5),
+            ("rect", "D", 14, 14, 2, 2),
+            ("rect", "D", 18, 14, 2, 2),
+            ("rect", "E", 14, 22, 1, 4),
+            ("rect", "E", 17, 22, 1, 4),
+        ],
+    },
+    {
+        "filename": "enemies/midge.png",
+        "palette": {
+            "A": "#18202f",
+            "B": "#57758c",
+            "C": "#a7e8ff",
+            "D": "#ffe1a1",
+            "E": "#f4f0e6",
+        },
+        "ops": [
+            ("ellipse", "A", 16, 17, 8, 6),
+            ("ellipse", "B", 16, 17, 6, 4),
+            ("ellipse", "C", 8, 12, 4, 6),
+            ("ellipse", "C", 24, 12, 4, 6),
+            ("rect", "D", 15, 13, 2, 2),
+            ("rect", "E", 15, 11, 2, 1),
+            ("rect", "E", 15, 20, 2, 3),
+            ("rect", "E", 11, 22, 1, 3),
+            ("rect", "E", 20, 22, 1, 3),
+        ],
+    },
+    {
+        "filename": "enemies/hornet.png",
+        "palette": {
+            "A": "#23140f",
+            "B": "#8d4b3a",
+            "C": "#ffd462",
+            "D": "#fff0a1",
+            "E": "#f2cf67",
+        },
+        "ops": [
+            ("ellipse", "A", 16, 17, 9, 7),
+            ("ellipse", "B", 16, 17, 7, 5),
+            ("rect", "C", 13, 12, 6, 2),
+            ("rect", "B", 13, 15, 6, 2),
+            ("rect", "C", 13, 18, 6, 2),
+            ("ellipse", "D", 8, 11, 4, 6),
+            ("ellipse", "D", 24, 11, 4, 6),
+            ("rect", "E", 15, 22, 2, 4),
+        ],
+    },
+    {
+        "filename": "enemies/wasp.png",
+        "palette": {
+            "A": "#28180f",
+            "B": "#865734",
+            "C": "#ffc85d",
+            "D": "#fff1ad",
+            "E": "#f1c04d",
+        },
+        "ops": [
+            ("ellipse", "A", 16, 17, 9, 7),
+            ("ellipse", "B", 16, 17, 7, 5),
+            ("rect", "C", 12, 13, 8, 2),
+            ("rect", "B", 12, 16, 8, 2),
+            ("rect", "C", 12, 19, 8, 2),
+            ("ellipse", "D", 8, 11, 4, 6),
+            ("ellipse", "D", 24, 11, 4, 6),
+            ("rect", "E", 15, 22, 2, 4),
+            ("rect", "E", 10, 19, 2, 3),
+            ("rect", "E", 20, 19, 2, 3),
+        ],
+    },
+    {
+        "filename": "enemies/grasshopper.png",
+        "palette": {
+            "A": "#162313",
+            "B": "#4f7c39",
+            "C": "#bbdf7f",
+            "D": "#eaff9f",
+            "E": "#92c85f",
+        },
+        "ops": [
+            ("ellipse", "A", 16, 17, 9, 7),
+            ("ellipse", "B", 16, 17, 7, 5),
+            ("ellipse", "C", 10, 15, 4, 5),
+            ("ellipse", "C", 22, 15, 4, 5),
+            ("rect", "D", 15, 13, 2, 2),
+            ("rect", "E", 8, 20, 4, 2),
+            ("rect", "E", 20, 20, 4, 2),
+            ("rect", "E", 11, 22, 2, 4),
+            ("rect", "E", 19, 22, 2, 4),
+            ("rect", "E", 15, 11, 2, 2),
+        ],
+    },
+    {
+        "filename": "enemies/frog.png",
+        "palette": {
+            "A": "#142118",
+            "B": "#3e7246",
+            "C": "#b6db81",
+            "D": "#fff0b1",
+            "E": "#6e9f58",
+        },
+        "ops": [
+            ("ellipse", "A", 16, 18, 10, 8),
+            ("ellipse", "B", 16, 18, 8, 6),
+            ("ellipse", "C", 10, 10, 3, 3),
+            ("ellipse", "C", 22, 10, 3, 3),
+            ("ellipse", "D", 10, 9, 2, 2),
+            ("ellipse", "D", 22, 9, 2, 2),
+            ("rect", "E", 13, 22, 6, 2),
+            ("rect", "E", 11, 25, 3, 2),
+            ("rect", "E", 18, 25, 3, 2),
+        ],
+    },
+    {
+        "filename": "enemies/bumble-bee-queen.png",
+        "palette": {
+            "A": "#25180d",
+            "B": "#8d6235",
+            "C": "#ffcf64",
+            "D": "#fff0a6",
+            "E": "#f3d877",
+        },
+        "ops": [
+            ("ellipse", "A", 16, 16, 11, 9),
+            ("ellipse", "B", 16, 16, 9, 7),
+            ("rect", "C", 12, 11, 8, 2),
+            ("rect", "B", 12, 14, 8, 2),
+            ("rect", "C", 12, 17, 8, 2),
+            ("rect", "B", 12, 20, 8, 2),
+            ("ellipse", "D", 8, 10, 4, 6),
+            ("ellipse", "D", 24, 10, 4, 6),
+            ("rect", "E", 13, 6, 2, 4),
+            ("rect", "E", 17, 6, 2, 4),
+            ("rect", "E", 14, 3, 4, 2),
+        ],
+    },
+    {
+        "filename": "enemies/ai-ant.png",
+        "palette": {
+            "A": "#151824",
+            "B": "#5d637a",
+            "C": "#7de7ff",
+            "D": "#fef2a6",
+            "E": "#b7c2da",
+        },
+        "ops": [
+            ("ellipse", "A", 16, 16, 10, 8),
+            ("ellipse", "B", 16, 16, 8, 6),
+            ("ellipse", "E", 8, 13, 3, 4),
+            ("ellipse", "E", 16, 13, 3, 4),
+            ("ellipse", "E", 24, 13, 3, 4),
+            ("rect", "C", 15, 11, 2, 2),
+            ("rect", "C", 15, 15, 2, 2),
+            ("rect", "D", 15, 8, 2, 2),
+            ("rect", "D", 11, 5, 1, 4),
+            ("rect", "D", 20, 5, 1, 4),
+            ("rect", "C", 10, 22, 4, 2),
+            ("rect", "C", 18, 22, 4, 2),
+        ],
+    },
+    {
+        "filename": "enemies/dark-crow.png",
+        "palette": {
+            "A": "#14101d",
+            "B": "#453a59",
+            "C": "#9f83d0",
+            "D": "#fff1a0",
+            "E": "#2a2136",
+        },
+        "ops": [
+            ("ellipse", "A", 16, 16, 11, 8),
+            ("ellipse", "B", 16, 16, 9, 6),
+            ("ellipse", "E", 8, 12, 6, 4),
+            ("ellipse", "E", 24, 12, 6, 4),
+            ("rect", "C", 15, 9, 2, 2),
+            ("rect", "D", 17, 12, 2, 2),
+            ("rect", "C", 13, 20, 6, 3),
+            ("rect", "E", 20, 7, 2, 4),
+        ],
+    },
+]
+
+
 def main() -> None:
-    for spec in SPRITES:
-        rows = scale_rows(spec["data"], spec["palette"], spec["pixel_width"])
+    # Keep the existing base art untouched. This exporter now only regenerates enemies.
+    for spec in ENEMY_SPRITES:
+        canvas = make_canvas(32)
+
+        for op in spec["ops"]:
+            kind = op[0]
+
+            if kind == "ellipse":
+                _, token, cx, cy, rx, ry = op
+                paint_ellipse(canvas, token, cx, cy, rx, ry)
+            elif kind == "rect":
+                _, token, x, y, width, height = op
+                paint_rect(canvas, token, x, y, width, height)
+
+        rows = canvas_to_rows(canvas, spec["palette"])
         write_png(OUTPUT_DIR / spec["filename"], rows)
         print(f"wrote {spec['filename']}")
 

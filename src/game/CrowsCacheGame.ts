@@ -1,29 +1,41 @@
 import {
-  advanceClock,
-  createStateFromKinds,
-  initializeRun,
-  trySwap,
-  type MatchCrowClockResult,
-  type MatchCrowResolution,
-  type MatchCrowState,
-} from './simulation/engine.ts';
-import type { Cell, RunTilePool, TileKind } from './simulation/types.ts';
+  PERMANENT_UPGRADE_OPTIONS,
+  type PermanentUpgradeId,
+  type PermanentUpgradeOption,
+} from './campaignData.ts';
 import { getProgressionState, getRunXpForScore, type MatchCrowProgressionState } from './progression.ts';
 import {
-  getTileDefinition,
-  getUnlocksBetweenLevels,
-  getUnlockedTileDefinitions,
-  pickRunTilePool,
-} from './tileCatalog.ts';
-import { getSubmitEligibility, normalizeInitials } from '../services/leaderboard.ts';
+  advanceClock,
+  initializeRun,
+  retireRun,
+  setSelectedAction,
+  skipBattle,
+  trySwap,
+  type CampaignClockResult,
+  type CampaignResolution,
+  type CampaignRunState,
+  type PlayerBonuses,
+} from './simulation/engine.ts';
+import type { Cell } from './simulation/types.ts';
+import {
+  getSubmitEligibility,
+  normalizeInitials,
+  type SubmitEligibility,
+} from '../services/leaderboard.ts';
+import type { PlayerActionId, RunEndedReason } from './campaignData.ts';
 
-type RestartListener = (state: MatchCrowState) => void;
+type RestartListener = (state: CampaignRunState) => void;
 
 const HIGH_SCORE_STORAGE_KEY = 'matchcrow.high-score';
 const TOTAL_XP_STORAGE_KEY = 'matchcrow.total-xp';
 const PLAYER_ID_STORAGE_KEY = 'matchcrow.player-id';
 const LAST_SUBMITTED_SCORE_STORAGE_KEY = 'matchcrow.last-submitted-score';
 const LAST_SUBMITTED_INITIALS_STORAGE_KEY = 'matchcrow.last-submitted-initials';
+const MAX_HP_BONUS_STORAGE_KEY = 'matchcrow.max-hp-bonus';
+const ATTACK_BONUS_STORAGE_KEY = 'matchcrow.attack-bonus';
+const GUARD_BONUS_STORAGE_KEY = 'matchcrow.guard-bonus';
+const HEAL_BONUS_STORAGE_KEY = 'matchcrow.heal-bonus';
+const PENDING_UPGRADES_STORAGE_KEY = 'matchcrow.pending-upgrades';
 
 export interface MatchCrowLeaderboardState {
   playerId: string;
@@ -31,31 +43,41 @@ export interface MatchCrowLeaderboardState {
   lastSubmittedInitials: string;
   canSubmit: boolean;
   submitReason?: string;
+  submitScore: number;
 }
 
-export interface MatchCrowUnlockState {
-  runTilePool: RunTilePool;
-  unlockedTileKinds: TileKind[];
-  newlyUnlockedTileKinds: TileKind[];
+export interface MatchCrowPendingUpgradeState {
+  remainingChoices: number;
+  options: PermanentUpgradeOption[];
 }
 
-export interface MatchCrowViewState extends MatchCrowState {
-  leaderboard: MatchCrowLeaderboardState;
+export interface MatchCrowPostRunState {
+  awardedXp: number;
+  levelsGained: number;
+  endedReason: RunEndedReason | null;
+}
+
+export interface MatchCrowViewState extends CampaignRunState {
   progression: MatchCrowProgressionState;
-  unlocks: MatchCrowUnlockState;
+  leaderboard: MatchCrowLeaderboardState;
+  pendingUpgrades: MatchCrowPendingUpgradeState | null;
+  postRun: MatchCrowPostRunState;
 }
 
 export class CrowsCacheGame {
   private readonly rng: () => number;
-  private state: MatchCrowState;
+  private state: CampaignRunState;
   private readonly restartListeners = new Set<RestartListener>();
   private highScore = 0;
   private totalXp = 0;
   private readonly playerId: string;
   private lastSubmittedScore: number;
   private lastSubmittedInitials: string;
+  private bonuses: PlayerBonuses;
+  private pendingUpgradeChoices = 0;
   private runProgressCommitted = false;
-  private newlyUnlockedTileKinds: TileKind[] = [];
+  private lastRunAwardedXp = 0;
+  private lastRunLevelsGained = 0;
 
   constructor(rng: () => number = Math.random) {
     this.rng = rng;
@@ -64,94 +86,116 @@ export class CrowsCacheGame {
     this.playerId = readOrCreatePlayerId();
     this.lastSubmittedScore = readNumber(LAST_SUBMITTED_SCORE_STORAGE_KEY);
     this.lastSubmittedInitials = readString(LAST_SUBMITTED_INITIALS_STORAGE_KEY);
-    this.state = initializeRun(
-      this.rng,
-      this.highScore,
-      pickRunTilePool(getProgressionState(this.totalXp).level, this.rng),
-    );
+    this.pendingUpgradeChoices = readNumber(PENDING_UPGRADES_STORAGE_KEY);
+    this.bonuses = {
+      maxHpBonus: readNumber(MAX_HP_BONUS_STORAGE_KEY),
+      attackBonus: readNumber(ATTACK_BONUS_STORAGE_KEY),
+      guardBonus: readNumber(GUARD_BONUS_STORAGE_KEY),
+      healBonus: readNumber(HEAL_BONUS_STORAGE_KEY),
+    };
+    this.state = initializeRun(this.rng, this.highScore, this.bonuses);
   }
 
-  getState(): MatchCrowState {
+  getState(): CampaignRunState {
     return this.state;
   }
 
   getViewState(): MatchCrowViewState {
     const progression = getProgressionState(this.totalXp);
-    const submitEligibility = getSubmitEligibility(this.state.highScore, this.lastSubmittedScore);
-    const canSubmit = submitEligibility.canSubmit && this.state.runComplete;
-    const submitReason = canSubmit
-      ? undefined
-      : !this.state.runComplete && this.state.highScore > 0
-        ? 'Finish the run before posting.'
-        : submitEligibility.reason;
+    const submitEligibility = this.getSubmitEligibility();
 
     return {
       ...this.state,
+      progression,
       leaderboard: {
         playerId: this.playerId,
         lastSubmittedScore: this.lastSubmittedScore,
         lastSubmittedInitials: this.lastSubmittedInitials,
-        canSubmit,
-        submitReason,
+        canSubmit: submitEligibility.canSubmit,
+        submitReason: submitEligibility.reason,
+        submitScore: this.state.score,
       },
-      progression,
-      unlocks: {
-        runTilePool: this.state.runTilePool,
-        unlockedTileKinds: getUnlockedTileDefinitions(progression.level).map((definition) => definition.kind),
-        newlyUnlockedTileKinds: [...this.newlyUnlockedTileKinds],
+      pendingUpgrades:
+        this.pendingUpgradeChoices > 0
+          ? {
+              remainingChoices: this.pendingUpgradeChoices,
+              options: [...PERMANENT_UPGRADE_OPTIONS],
+            }
+          : null,
+      postRun: {
+        awardedXp: this.lastRunAwardedXp,
+        levelsGained: this.lastRunLevelsGained,
+        endedReason: this.state.runEndedReason,
       },
     };
   }
 
-  advanceClock(elapsedMs: number): MatchCrowClockResult {
+  advanceClock(elapsedMs: number): CampaignClockResult {
+    const previousPhase = this.state.phase;
     const result = advanceClock(this.state, elapsedMs);
 
     if (result.changed) {
       this.state = result.state;
+      this.syncHighScore();
 
-      if (result.becameComplete) {
-        const newlyUnlockedTileKinds = this.commitRunProgress();
-
-        if (newlyUnlockedTileKinds.length > 0) {
-          this.state = {
-            ...this.state,
-            lastMessage: buildLevelUpStatusMessage(newlyUnlockedTileKinds),
-          };
-        }
+      if (previousPhase === 'battle' && result.state.phase === 'ended') {
+        this.commitRunProgress();
       }
     }
 
-    return result.changed
-      ? {
-          ...result,
-          state: this.state,
-        }
-      : result;
+    return {
+      ...result,
+      state: this.state,
+    };
   }
 
-  trySwap(from: Cell, to: Cell): MatchCrowResolution {
+  trySwap(from: Cell, to: Cell): CampaignResolution {
+    const previousPhase = this.state.phase;
     const result = trySwap(this.state, from, to, this.rng);
 
     if (result.accepted) {
       this.state = result.state;
       this.syncHighScore();
+
+      if (previousPhase === 'battle' && this.state.phase === 'ended') {
+        this.commitRunProgress();
+      }
     }
 
-    return result;
+    return {
+      ...result,
+      state: this.state,
+    };
   }
 
-  restart(): MatchCrowState {
-    this.commitRunProgress();
-    this.highScore = Math.max(this.highScore, this.state.highScore);
-    this.state = initializeRun(
-      this.rng,
-      this.highScore,
-      pickRunTilePool(getProgressionState(this.totalXp).level, this.rng),
-    );
-    this.runProgressCommitted = false;
-    this.newlyUnlockedTileKinds = [];
-    this.restartListeners.forEach((listener) => listener(this.state));
+  selectAction(action: PlayerActionId): CampaignRunState {
+    this.state = setSelectedAction(this.state, action);
+    return this.state;
+  }
+
+  retire(): CampaignRunState {
+    const previousPhase = this.state.phase;
+    this.state = retireRun(this.state);
     this.syncHighScore();
+
+    if (previousPhase === 'battle' && this.state.phase === 'ended') {
+      this.commitRunProgress();
+    }
+
+    return this.state;
+  }
+
+  skipBattle(): CampaignRunState {
+    this.state = skipBattle(this.state);
+    return this.state;
+  }
+
+  restart(): CampaignRunState {
+    this.state = initializeRun(this.rng, this.highScore, this.bonuses);
+    this.runProgressCommitted = false;
+    this.lastRunAwardedXp = 0;
+    this.lastRunLevelsGained = 0;
+    this.restartListeners.forEach((listener) => listener(this.state));
     return this.state;
   }
 
@@ -163,8 +207,41 @@ export class CrowsCacheGame {
     };
   }
 
-  createStateFromKinds(kinds: TileKind[][]): MatchCrowState {
-    return createStateFromKinds(kinds, this.highScore, this.state.runTilePool);
+  applyPermanentUpgrade(upgradeId: PermanentUpgradeId): MatchCrowViewState {
+    if (this.pendingUpgradeChoices <= 0) {
+      return this.getViewState();
+    }
+
+    if (upgradeId === 'heart') {
+      this.bonuses.maxHpBonus += 8;
+      writeNumber(MAX_HP_BONUS_STORAGE_KEY, this.bonuses.maxHpBonus);
+    } else if (upgradeId === 'claw') {
+      this.bonuses.attackBonus += 3;
+      writeNumber(ATTACK_BONUS_STORAGE_KEY, this.bonuses.attackBonus);
+    } else if (upgradeId === 'bark') {
+      this.bonuses.guardBonus += 3;
+      writeNumber(GUARD_BONUS_STORAGE_KEY, this.bonuses.guardBonus);
+    } else {
+      this.bonuses.healBonus += 3;
+      writeNumber(HEAL_BONUS_STORAGE_KEY, this.bonuses.healBonus);
+    }
+
+    this.pendingUpgradeChoices = Math.max(0, this.pendingUpgradeChoices - 1);
+    writeNumber(PENDING_UPGRADES_STORAGE_KEY, this.pendingUpgradeChoices);
+
+    if (this.pendingUpgradeChoices > 0) {
+      this.state = {
+        ...this.state,
+        lastMessage: `Permanent upgrade stored. ${this.pendingUpgradeChoices} more to choose.`,
+      };
+    } else if (this.state.phase === 'ended') {
+      this.state = {
+        ...this.state,
+        lastMessage: 'Permanent upgrades stored. Start a new run when ready.',
+      };
+    }
+
+    return this.getViewState();
   }
 
   recordSubmittedScore(initials: string, score: number): void {
@@ -181,6 +258,17 @@ export class CrowsCacheGame {
     }
   }
 
+  private getSubmitEligibility(): SubmitEligibility {
+    if (this.state.phase !== 'ended') {
+      return {
+        canSubmit: false,
+        reason: this.state.score > this.lastSubmittedScore ? 'Retire or finish the run to submit.' : 'Finish the run to submit.',
+      };
+    }
+
+    return getSubmitEligibility(this.state.score, this.lastSubmittedScore);
+  }
+
   private syncHighScore(): void {
     if (this.state.highScore <= this.highScore) {
       return;
@@ -190,37 +278,45 @@ export class CrowsCacheGame {
     writeNumber(HIGH_SCORE_STORAGE_KEY, this.highScore);
   }
 
-  private commitRunProgress(): TileKind[] {
+  private commitRunProgress(): void {
     if (this.runProgressCommitted) {
-      return [...this.newlyUnlockedTileKinds];
+      return;
     }
 
     this.runProgressCommitted = true;
-    this.newlyUnlockedTileKinds = [];
-    const previousLevel = getProgressionState(this.totalXp).level;
+    this.lastRunAwardedXp = 0;
+    this.lastRunLevelsGained = 0;
+
     const awardedXp = getRunXpForScore(this.state.score);
 
     if (awardedXp <= 0) {
-      return [];
+      return;
     }
 
+    const previousLevel = getProgressionState(this.totalXp).level;
+
+    this.lastRunAwardedXp = awardedXp;
     this.totalXp += awardedXp;
     writeNumber(TOTAL_XP_STORAGE_KEY, this.totalXp);
-    this.newlyUnlockedTileKinds = getUnlocksBetweenLevels(previousLevel, getProgressionState(this.totalXp).level).map(
-      (definition) => definition.kind,
-    );
-    return [...this.newlyUnlockedTileKinds];
+
+    const nextLevel = getProgressionState(this.totalXp).level;
+    this.lastRunLevelsGained = Math.max(0, nextLevel - previousLevel);
+
+    if (this.lastRunLevelsGained > 0) {
+      this.pendingUpgradeChoices += this.lastRunLevelsGained;
+      writeNumber(PENDING_UPGRADES_STORAGE_KEY, this.pendingUpgradeChoices);
+      this.state = {
+        ...this.state,
+        lastMessage: `Run over. +${awardedXp} XP and ${this.lastRunLevelsGained} permanent upgrade picks.`,
+      };
+      return;
+    }
+
+    this.state = {
+      ...this.state,
+      lastMessage: `Run over. +${awardedXp} XP earned.`,
+    };
   }
-}
-
-function buildLevelUpStatusMessage(tileKinds: TileKind[]): string {
-  const labels = tileKinds.map((kind) => getTileDefinition(kind).label);
-
-  if (labels.length === 1) {
-    return `Level Up! New tile unlocked for next run: ${labels[0]}.`;
-  }
-
-  return `Level Up! New tiles unlocked for next run: ${labels.join(', ')}.`;
 }
 
 function readNumber(storageKey: string): number {

@@ -14,6 +14,10 @@ export interface LeaderboardEntry {
   playerId: string;
   initials: string;
   score: number;
+  level: number;
+  battleReached: number;
+  loopCount: number;
+  endedBy: 'defeat' | 'retire' | 'timeout';
   updatedAt?: Date | null;
 }
 
@@ -26,6 +30,10 @@ export interface SubmitScoreRequest {
   playerId: string;
   initials: string;
   score: number;
+  level: number;
+  battleReached: number;
+  loopCount: number;
+  endedBy: 'defeat' | 'retire' | 'timeout';
 }
 
 export interface SubmitResult {
@@ -90,6 +98,10 @@ export async function fetchTopScores(): Promise<LeaderboardEntry[]> {
       playerId: doc.id,
       initials: doc.get('initials') as string,
       score: doc.get('score') as number,
+      level: (doc.get('level') as number | undefined) ?? 1,
+      battleReached: (doc.get('battleReached') as number | undefined) ?? 0,
+      loopCount: (doc.get('loopCount') as number | undefined) ?? 0,
+      endedBy: ((doc.get('endedBy') as LeaderboardEntry['endedBy'] | undefined) ?? 'retire'),
       updatedAt: updatedAt && typeof updatedAt.toDate === 'function' ? updatedAt.toDate() : null,
     };
   });
@@ -110,6 +122,18 @@ export async function submitScore(request: SubmitScoreRequest): Promise<SubmitRe
     throw new Error('Score must be a non-negative integer.');
   }
 
+  if (!Number.isSafeInteger(request.level) || request.level < 1) {
+    throw new Error('Level must be a positive integer.');
+  }
+
+  if (!Number.isSafeInteger(request.battleReached) || request.battleReached < 1) {
+    throw new Error('Battle reached must be a positive integer.');
+  }
+
+  if (!Number.isSafeInteger(request.loopCount) || request.loopCount < 0) {
+    throw new Error('Loop count must be a non-negative integer.');
+  }
+
   const { firestore } = getFirebaseClients();
   const entryRef = doc(firestore, 'leaderboard', request.playerId);
 
@@ -121,6 +145,10 @@ export async function submitScore(request: SubmitScoreRequest): Promise<SubmitRe
         playerId: request.playerId,
         initials,
         score: request.score,
+        level: request.level,
+        battleReached: request.battleReached,
+        loopCount: request.loopCount,
+        endedBy: request.endedBy,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -147,6 +175,10 @@ export async function submitScore(request: SubmitScoreRequest): Promise<SubmitRe
     transaction.update(entryRef, {
       initials,
       score: request.score,
+      level: request.level,
+      battleReached: request.battleReached,
+      loopCount: request.loopCount,
+      endedBy: request.endedBy,
       updatedAt: serverTimestamp(),
     });
 

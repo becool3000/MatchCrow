@@ -26,6 +26,10 @@ exports.submitHighScore = (0, https_1.onCall)({
                 playerId: snapshot.id,
                 initials: snapshot.get('initials'),
                 score: snapshot.get('score'),
+                level: snapshot.get('level') ?? 1,
+                battleReached: snapshot.get('battleReached') ?? 1,
+                loopCount: snapshot.get('loopCount') ?? 0,
+                endedBy: (snapshot.get('endedBy') ?? 'retire'),
             }
             : null;
         const { stored, result } = (0, submitHighScore_1.resolveStoredLeaderboardEntry)(existing, payload);
@@ -34,6 +38,10 @@ exports.submitHighScore = (0, https_1.onCall)({
                 playerId: stored.playerId,
                 initials: stored.initials,
                 score: stored.score,
+                level: stored.level,
+                battleReached: stored.battleReached,
+                loopCount: stored.loopCount,
+                endedBy: stored.endedBy,
                 createdAt: firestore_1.FieldValue.serverTimestamp(),
                 updatedAt: firestore_1.FieldValue.serverTimestamp(),
             });
@@ -42,6 +50,10 @@ exports.submitHighScore = (0, https_1.onCall)({
             transaction.update(docRef, {
                 initials: stored.initials,
                 score: stored.score,
+                level: stored.level,
+                battleReached: stored.battleReached,
+                loopCount: stored.loopCount,
+                endedBy: stored.endedBy,
                 updatedAt: firestore_1.FieldValue.serverTimestamp(),
             });
         }

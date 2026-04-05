@@ -7,6 +7,10 @@ service cloud.firestore {
         'playerId',
         'initials',
         'score',
+        'level',
+        'battleReached',
+        'loopCount',
+        'endedBy',
         'createdAt',
         'updatedAt',
       ]) &&
@@ -14,7 +18,14 @@ service cloud.firestore {
       request.resource.data.initials is string &&
       request.resource.data.initials.matches('^[A-Z]{3}$') &&
       request.resource.data.score is int &&
-      request.resource.data.score >= 0;
+      request.resource.data.score >= 0 &&
+      request.resource.data.level is int &&
+      request.resource.data.level >= 1 &&
+      request.resource.data.battleReached is int &&
+      request.resource.data.battleReached >= 1 &&
+      request.resource.data.loopCount is int &&
+      request.resource.data.loopCount >= 0 &&
+      request.resource.data.endedBy in ['defeat', 'retire', 'timeout'];
     }
 
     match /leaderboard/{playerId} {

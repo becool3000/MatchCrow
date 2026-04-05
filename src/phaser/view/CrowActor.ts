@@ -96,6 +96,8 @@ export class CrowActor {
 
   async takeHit(): Promise<void> {
     this.stopIdle();
+    this.setTexture(CROW_TEXTURE_KEYS.idleB);
+    this.sprite.setTint(0xff6870);
     const startX = this.perch.x;
     const startY = this.perch.y;
 
@@ -111,6 +113,7 @@ export class CrowActor {
     });
 
     this.sprite.setAlpha(1);
+    this.sprite.clearTint();
     this.startIdle();
   }
 
@@ -141,6 +144,7 @@ export class CrowActor {
     this.setTexture(CROW_TEXTURE_KEYS.idleA);
     this.sprite.setAngle(0);
     this.sprite.setAlpha(1);
+    this.sprite.clearTint();
     this.sprite.setScale(this.baseScale);
     this.sprite.setY(this.perch.y);
     this.sprite.play('crow-idle');

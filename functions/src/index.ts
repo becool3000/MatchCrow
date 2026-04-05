@@ -36,6 +36,10 @@ export const submitHighScore = onCall(
             playerId: snapshot.id,
             initials: snapshot.get('initials') as string,
             score: snapshot.get('score') as number,
+            level: (snapshot.get('level') as number | undefined) ?? 1,
+            battleReached: (snapshot.get('battleReached') as number | undefined) ?? 1,
+            loopCount: (snapshot.get('loopCount') as number | undefined) ?? 0,
+            endedBy: ((snapshot.get('endedBy') as LeaderboardDocument['endedBy'] | undefined) ?? 'retire'),
           } satisfies StoredLeaderboardEntry)
         : null;
       const { stored, result } = resolveStoredLeaderboardEntry(existing, payload);
@@ -45,6 +49,10 @@ export const submitHighScore = onCall(
           playerId: stored.playerId,
           initials: stored.initials,
           score: stored.score,
+          level: stored.level,
+          battleReached: stored.battleReached,
+          loopCount: stored.loopCount,
+          endedBy: stored.endedBy,
           createdAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
         });
@@ -52,6 +60,10 @@ export const submitHighScore = onCall(
         transaction.update(docRef, {
           initials: stored.initials,
           score: stored.score,
+          level: stored.level,
+          battleReached: stored.battleReached,
+          loopCount: stored.loopCount,
+          endedBy: stored.endedBy,
           updatedAt: FieldValue.serverTimestamp(),
         });
       }
@@ -67,6 +79,10 @@ export interface LeaderboardDocument {
   playerId: string;
   initials: string;
   score: number;
+  level: number;
+  battleReached: number;
+  loopCount: number;
+  endedBy: 'defeat' | 'retire' | 'timeout';
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
 }

@@ -1,21 +1,8 @@
-import { DEFAULT_STATUS, TEXTURE_FILE_PATHS } from '../game/assets/manifest.ts';
+import { PERMANENT_UPGRADE_OPTIONS, type PermanentUpgradeId, type PlayerActionId } from '../game/campaignData.ts';
 import type { MatchCrowViewState } from '../game/CrowsCacheGame.ts';
-import {
-  getRoadmapUnlocks,
-  getRunPoolDefinitions,
-  getTileDefinitions,
-  isBaseTileKind,
-  TILE_ROLE_LABELS,
-  type TileDefinition,
-} from '../game/tileCatalog.ts';
-import {
-  CROW_CAW_WAVEFORMS,
-  type CrowCawTuning,
-  type CrowCawWaveform,
-} from '../phaser/view/MatchCrowSfx.ts';
 import type { LeaderboardEntry } from '../services/leaderboard.ts';
 
-type OverlayMode = 'leaderboard' | 'submit' | 'cawDebug' | 'collection' | null;
+type OverlayMode = 'leaderboard' | 'submit' | null;
 
 interface LeaderboardOverlayState {
   status: 'idle' | 'loading' | 'ready' | 'error' | 'unavailable';
@@ -30,35 +17,30 @@ interface SubmitOverlayState {
   message: string;
 }
 
-interface CawLabOverlayState {
-  tuning: CrowCawTuning;
-  message: string;
-  status: 'idle' | 'success' | 'error';
-}
-
 export interface GameHud {
   canvasHost: HTMLDivElement;
   render: (state: MatchCrowViewState) => void;
+  setSoundEnabled: (enabled: boolean) => void;
+  setMusicEnabled: (enabled: boolean) => void;
   setStatus: (text: string) => void;
+  pulsePlayerDamage: () => void;
   pulseTimer: (bonusTimeMs: number) => void;
   onRestart: (handler: () => void) => void;
+  onSkipBattle: (handler: () => void) => void;
+  onRetire: (handler: () => void) => void;
+  onToggleSound: (handler: () => void) => void;
+  onToggleMusic: (handler: () => void) => void;
+  onSelectAction: (handler: (action: PlayerActionId) => void) => void;
+  onChooseUpgrade: (handler: (upgradeId: PermanentUpgradeId) => void) => void;
   onOpenLeaderboard: (handler: () => void) => void;
   onRetryLeaderboard: (handler: () => void) => void;
   onOpenSubmit: (handler: () => void) => void;
   onSubmitScore: (handler: (initials: string) => void) => void;
-  onOpenCawLab: (handler: () => void) => void;
-  onPreviewCaw: (handler: () => void) => void;
-  onUpdateCawTuning: (handler: (patch: Partial<CrowCawTuning>) => void) => void;
-  onResetCawTuning: (handler: () => void) => void;
-  onExportCawPreset: (handler: (tuning: CrowCawTuning) => void) => void;
   showLeaderboardLoading: () => void;
   showLeaderboardEntries: (entries: LeaderboardEntry[], highlightedPlayerId: string) => void;
   showLeaderboardError: (message: string) => void;
   showLeaderboardUnavailable: (message: string) => void;
   openSubmitDialog: (initials: string) => void;
-  openCawLab: (tuning: CrowCawTuning) => void;
-  syncCawLab: (tuning: CrowCawTuning) => void;
-  setCawLabMessage: (message: string, status: 'idle' | 'success' | 'error') => void;
   setSubmitBusy: () => void;
   setSubmitError: (message: string) => void;
   setSubmitSuccess: (message: string) => void;
@@ -71,19 +53,59 @@ export function createHud(
   options: {
     leaderboardReadEnabled: boolean;
     leaderboardSubmitEnabled: boolean;
-    initialCrowCawTuning: CrowCawTuning;
+    devToolsEnabled: boolean;
+    soundEnabled: boolean;
+    musicEnabled: boolean;
   },
 ): GameHud {
   root.innerHTML = `
     <div class="page-shell">
-      <main class="game-shell">
+      <main class="game-shell game-shell-battle">
         <header class="hud-strip">
+          <div class="hud-audio-controls">
+            <button
+              type="button"
+              class="hud-audio-button"
+              data-toggle-sound
+              data-enabled="${options.soundEnabled}"
+              aria-label="Toggle sound effects"
+              title="Sound effects"
+            >
+              <span class="hud-audio-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" class="hud-audio-svg hud-audio-svg-speaker">
+                  <path d="M4 10h4.8L13.5 6v12l-4.7-4H4z" fill="currentColor"></path>
+                  <path d="M16 9c1.55 1.25 1.55 4.75 0 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none"></path>
+                  <path d="M18.8 6.7c2.95 2.8 2.95 7.8 0 10.6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none"></path>
+                </svg>
+              </span>
+              <span class="hud-audio-slash" aria-hidden="true"></span>
+            </button>
+            <button
+              type="button"
+              class="hud-audio-button"
+              data-toggle-music
+              data-enabled="${options.musicEnabled}"
+              aria-label="Toggle music"
+              title="Music"
+            >
+              <span class="hud-audio-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" class="hud-audio-svg hud-audio-svg-note">
+                  <circle cx="9" cy="17.2" r="3.35" fill="currentColor"></circle>
+                  <circle cx="17.2" cy="14.3" r="3.1" fill="currentColor"></circle>
+                  <rect x="12.15" y="4.2" width="2.25" height="12.1" fill="currentColor"></rect>
+                  <rect x="20.05" y="2.6" width="2.1" height="11.4" fill="currentColor"></rect>
+                  <path d="M14.4 4.3 22.1 2.6v3.45L14.4 7.75z" fill="currentColor"></path>
+                </svg>
+              </span>
+              <span class="hud-audio-slash" aria-hidden="true"></span>
+            </button>
+          </div>
           <span class="brand-chip">MatchCrow</span>
           <div class="stat-box">
             <span>Score</span>
             <strong data-score>000000</strong>
           </div>
-          <div class="stat-box">
+          <div class="stat-box stat-box-high">
             <span>High</span>
             <strong data-high-score>000000</strong>
           </div>
@@ -95,24 +117,41 @@ export function createHud(
               initialState.progression.xpForNextLevel,
             )}</em>
           </div>
+          <div class="stat-box stat-box-battle">
+            <span>Battle</span>
+            <strong data-battle>${initialState.battleIndex.toString().padStart(2, '0')}</strong>
+            <em class="stat-box-detail" data-loop>Loop ${initialState.loopCount + 1}</em>
+          </div>
+          <div class="stat-box stat-box-hp">
+            <span>HP</span>
+            <strong data-hp>${formatHp(initialState.player.currentHp, initialState.player.maxHp)}</strong>
+            <em class="stat-box-detail" data-shield>Shield ${initialState.player.shield}</em>
+          </div>
           <div class="stat-box stat-box-timer" data-timer-box>
-            <span>Time</span>
-            <strong data-timer>${formatRemainingTime(initialState.timeRemainingMs)}</strong>
+            <span>Timer</span>
+            <strong data-timer>${formatRemainingTime(initialState.battleTimerMs)}</strong>
             <em class="timer-bonus" data-timer-bonus hidden>+0s</em>
           </div>
           <div class="hud-actions">
             <button type="button" class="hud-button" data-open-leaderboard>Top 100</button>
             <button type="button" class="hud-button" data-open-submit hidden>Submit Score</button>
-            <button type="button" class="hud-button hud-button-secondary" data-open-collection>Collection</button>
-            <button type="button" class="hud-button hud-button-secondary" data-open-caw-lab>Caw Lab</button>
-            <button type="button" class="restart-button" data-restart>Reset</button>
+            ${
+              options.devToolsEnabled
+                ? '<button type="button" class="hud-button hud-button-secondary" data-skip-battle>Skip Battle</button>'
+                : ''
+            }
+            <button type="button" class="hud-button hud-button-secondary" data-retire>Retire</button>
+            <button type="button" class="restart-button" data-restart>New Run</button>
           </div>
         </header>
 
-        <p class="status-strip" data-status>${DEFAULT_STATUS}</p>
-
         <section class="playfield-frame" data-playfield-frame>
           <div class="playfield-canvas" data-canvas></div>
+        </section>
+
+        <section class="combat-strip">
+          <div class="command-grid" data-command-grid></div>
+          <div class="enemy-summary" data-enemy-summary></div>
         </section>
       </main>
 
@@ -133,19 +172,28 @@ export function createHud(
   const highScoreEl = root.querySelector<HTMLElement>('[data-high-score]');
   const levelEl = root.querySelector<HTMLElement>('[data-level]');
   const levelXpEl = root.querySelector<HTMLElement>('[data-level-xp]');
+  const battleEl = root.querySelector<HTMLElement>('[data-battle]');
+  const loopEl = root.querySelector<HTMLElement>('[data-loop]');
+  const hpBoxEl = root.querySelector<HTMLElement>('.stat-box-hp');
+  const hpEl = root.querySelector<HTMLElement>('[data-hp]');
+  const shieldEl = root.querySelector<HTMLElement>('[data-shield]');
   const timerEl = root.querySelector<HTMLElement>('[data-timer]');
   const timerBoxEl = root.querySelector<HTMLElement>('[data-timer-box]');
   const timerBonusEl = root.querySelector<HTMLElement>('[data-timer-bonus]');
-  const statusEl = root.querySelector<HTMLElement>('[data-status]');
   const playfieldFrameEl = root.querySelector<HTMLElement>('[data-playfield-frame]');
+  const commandGridEl = root.querySelector<HTMLDivElement>('[data-command-grid]');
+  const enemySummaryEl = root.querySelector<HTMLDivElement>('[data-enemy-summary]');
+  const soundToggleButton = root.querySelector<HTMLButtonElement>('[data-toggle-sound]');
+  const musicToggleButton = root.querySelector<HTMLButtonElement>('[data-toggle-music]');
   const restartButton = root.querySelector<HTMLButtonElement>('[data-restart]');
+  const skipBattleButton = root.querySelector<HTMLButtonElement>('[data-skip-battle]');
+  const retireButton = root.querySelector<HTMLButtonElement>('[data-retire]');
   const leaderboardButton = root.querySelector<HTMLButtonElement>('[data-open-leaderboard]');
   const submitButton = root.querySelector<HTMLButtonElement>('[data-open-submit]');
-  const collectionButton = root.querySelector<HTMLButtonElement>('[data-open-collection]');
-  const cawLabButton = root.querySelector<HTMLButtonElement>('[data-open-caw-lab]');
   const overlayEl = root.querySelector<HTMLDivElement>('[data-overlay]');
   const overlayTitleEl = root.querySelector<HTMLElement>('[data-overlay-title]');
   const overlayBodyEl = root.querySelector<HTMLDivElement>('[data-overlay-body]');
+  const overlayCloseButton = root.querySelector<HTMLButtonElement>('[data-close-overlay]');
 
   if (
     !canvasHost ||
@@ -153,19 +201,27 @@ export function createHud(
     !highScoreEl ||
     !levelEl ||
     !levelXpEl ||
+    !battleEl ||
+    !loopEl ||
+    !hpBoxEl ||
+    !hpEl ||
+    !shieldEl ||
     !timerEl ||
     !timerBoxEl ||
     !timerBonusEl ||
-    !statusEl ||
     !playfieldFrameEl ||
+    !commandGridEl ||
+    !enemySummaryEl ||
+    !soundToggleButton ||
+    !musicToggleButton ||
     !restartButton ||
+    !retireButton ||
     !leaderboardButton ||
     !submitButton ||
-    !collectionButton ||
-    !cawLabButton ||
     !overlayEl ||
     !overlayTitleEl ||
-    !overlayBodyEl
+    !overlayBodyEl ||
+    !overlayCloseButton
   ) {
     throw new Error('MatchCrow HUD failed to initialize.');
   }
@@ -173,21 +229,27 @@ export function createHud(
   const ensuredOverlayEl = overlayEl;
   const ensuredOverlayTitleEl = overlayTitleEl;
   const ensuredOverlayBodyEl = overlayBodyEl;
+  const ensuredOverlayCloseButton = overlayCloseButton;
 
   const restartHandlers = new Set<() => void>();
+  const skipBattleHandlers = new Set<() => void>();
+  const retireHandlers = new Set<() => void>();
+  const toggleSoundHandlers = new Set<() => void>();
+  const toggleMusicHandlers = new Set<() => void>();
+  const selectActionHandlers = new Set<(action: PlayerActionId) => void>();
+  const chooseUpgradeHandlers = new Set<(upgradeId: PermanentUpgradeId) => void>();
   const openLeaderboardHandlers = new Set<() => void>();
   const retryLeaderboardHandlers = new Set<() => void>();
   const openSubmitHandlers = new Set<() => void>();
   const submitHandlers = new Set<(initials: string) => void>();
-  const openCawLabHandlers = new Set<() => void>();
-  const previewCawHandlers = new Set<() => void>();
-  const updateCawTuningHandlers = new Set<(patch: Partial<CrowCawTuning>) => void>();
-  const resetCawTuningHandlers = new Set<() => void>();
-  const exportCawPresetHandlers = new Set<(tuning: CrowCawTuning) => void>();
 
   let currentState = initialState;
   let overlayMode: OverlayMode = null;
+  let soundEnabled = options.soundEnabled;
+  let musicEnabled = options.musicEnabled;
+  let playerDamagePulseTimeout: number | undefined;
   let timerPulseTimeout: number | undefined;
+  let lastPointerSelectedAction: PlayerActionId | null = null;
   let leaderboardState: LeaderboardOverlayState = {
     status: 'idle',
     entries: [],
@@ -199,14 +261,25 @@ export function createHud(
     initials: initialState.leaderboard.lastSubmittedInitials,
     message: '',
   };
-  let cawLabState: CawLabOverlayState = {
-    tuning: { ...options.initialCrowCawTuning },
-    message: '',
-    status: 'idle',
-  };
 
   restartButton.addEventListener('click', () => {
     restartHandlers.forEach((handler) => handler());
+  });
+
+  skipBattleButton?.addEventListener('click', () => {
+    skipBattleHandlers.forEach((handler) => handler());
+  });
+
+  retireButton.addEventListener('click', () => {
+    retireHandlers.forEach((handler) => handler());
+  });
+
+  soundToggleButton.addEventListener('click', () => {
+    toggleSoundHandlers.forEach((handler) => handler());
+  });
+
+  musicToggleButton.addEventListener('click', () => {
+    toggleMusicHandlers.forEach((handler) => handler());
   });
 
   leaderboardButton.addEventListener('click', () => {
@@ -221,16 +294,33 @@ export function createHud(
     openSubmitHandlers.forEach((handler) => handler());
   });
 
-  collectionButton.addEventListener('click', () => {
-    overlayMode = 'collection';
-    renderOverlay();
-  });
+  const handleCommandSelection = (event: Event): void => {
+    const target = event.target as HTMLElement | null;
+    const action = target?.closest<HTMLElement>('[data-action-id]')?.dataset.actionId as PlayerActionId | undefined;
 
-  cawLabButton.addEventListener('click', () => {
-    openCawLabHandlers.forEach((handler) => handler());
-  });
+    if (!action) {
+      return;
+    }
 
-  ensuredOverlayEl.addEventListener('click', (event) => {
+    if (event.type === 'click' && lastPointerSelectedAction === action) {
+      lastPointerSelectedAction = null;
+      return;
+    }
+
+    if (event.type === 'pointerdown') {
+      lastPointerSelectedAction = action;
+    } else {
+      lastPointerSelectedAction = null;
+    }
+
+    event.preventDefault();
+    selectActionHandlers.forEach((handler) => handler(action));
+  };
+
+  commandGridEl.addEventListener('pointerdown', handleCommandSelection);
+  commandGridEl.addEventListener('click', handleCommandSelection);
+
+  overlayEl.addEventListener('click', (event) => {
     const target = event.target as HTMLElement | null;
 
     if (!target) {
@@ -247,54 +337,31 @@ export function createHud(
       return;
     }
 
-    if (target.closest('[data-preview-caw]')) {
-      previewCawHandlers.forEach((handler) => handler());
-      return;
-    }
+    const upgradeId = target.closest<HTMLElement>('[data-upgrade-id]')?.dataset.upgradeId as
+      | PermanentUpgradeId
+      | undefined;
 
-    if (target.closest('[data-reset-caw]')) {
-      resetCawTuningHandlers.forEach((handler) => handler());
-      return;
-    }
-
-    if (target.closest('[data-export-caw]')) {
-      exportCawPresetHandlers.forEach((handler) => handler({ ...cawLabState.tuning }));
+    if (upgradeId) {
+      chooseUpgradeHandlers.forEach((handler) => handler(upgradeId));
     }
   });
 
-  ensuredOverlayEl.addEventListener('input', (event) => {
+  overlayEl.addEventListener('input', (event) => {
     const target = event.target as HTMLInputElement | null;
 
-    if (!target) {
+    if (!target || target.dataset.initialsInput !== 'true') {
       return;
     }
 
-    if (target.dataset.initialsInput === 'true') {
-      const sanitized = target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3);
-      target.value = sanitized;
-      submitState = {
-        ...submitState,
-        initials: sanitized,
-      };
-      return;
-    }
-
-    if (target.dataset.cawField) {
-      handleCawTuningInput(target);
-    }
+    const sanitized = target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3);
+    target.value = sanitized;
+    submitState = {
+      ...submitState,
+      initials: sanitized,
+    };
   });
 
-  ensuredOverlayEl.addEventListener('change', (event) => {
-    const target = event.target as HTMLInputElement | HTMLSelectElement | null;
-
-    if (!target || !target.dataset.cawField) {
-      return;
-    }
-
-    handleCawTuningInput(target);
-  });
-
-  ensuredOverlayEl.addEventListener('submit', (event) => {
+  overlayEl.addEventListener('submit', (event) => {
     const form = event.target as HTMLFormElement | null;
 
     if (!form || form.dataset.submitForm !== 'true') {
@@ -312,8 +379,29 @@ export function createHud(
     submitHandlers.forEach((handler) => handler(initialsInput.value));
   });
 
-  const setStatus = (text: string): void => {
-    statusEl.textContent = text;
+  const setStatus = (_text: string): void => {};
+
+  const pulsePlayerDamage = (): void => {
+    if (playerDamagePulseTimeout) {
+      window.clearTimeout(playerDamagePulseTimeout);
+    }
+
+    hpBoxEl.classList.remove('hp-damage-pulse');
+    hpEl.classList.remove('hp-damage-value');
+    shieldEl.classList.remove('hp-damage-detail');
+
+    void hpBoxEl.offsetWidth;
+
+    hpBoxEl.classList.add('hp-damage-pulse');
+    hpEl.classList.add('hp-damage-value');
+    shieldEl.classList.add('hp-damage-detail');
+
+    playerDamagePulseTimeout = window.setTimeout(() => {
+      hpBoxEl.classList.remove('hp-damage-pulse');
+      hpEl.classList.remove('hp-damage-value');
+      shieldEl.classList.remove('hp-damage-detail');
+      playerDamagePulseTimeout = undefined;
+    }, 620);
   };
 
   const pulseTimer = (bonusTimeMs: number): void => {
@@ -348,19 +436,40 @@ export function createHud(
     highScoreEl.textContent = state.highScore.toString().padStart(6, '0');
     levelEl.textContent = state.progression.level.toString().padStart(2, '0');
     levelXpEl.textContent = formatLevelXp(state.progression.xpIntoLevel, state.progression.xpForNextLevel);
-    timerEl.textContent = formatRemainingTime(state.timeRemainingMs);
-    timerBoxEl.dataset.urgent = `${!state.runComplete && state.timeRemainingMs <= 15_000}`;
-    timerBoxEl.dataset.complete = `${state.runComplete}`;
-    statusEl.dataset.complete = `${state.runComplete}`;
-    playfieldFrameEl.dataset.locked = `${state.runComplete}`;
-    setStatus(state.lastMessage || DEFAULT_STATUS);
-
+    battleEl.textContent = state.battleIndex.toString().padStart(2, '0');
+    loopEl.textContent = `Loop ${state.loopCount + 1}`;
+    hpEl.textContent = formatHp(state.player.currentHp, state.player.maxHp);
+    shieldEl.textContent = `Shield ${state.player.shield}`;
+    timerEl.textContent = formatRemainingTime(state.battleTimerMs);
+    timerBoxEl.dataset.urgent = `${state.phase === 'battle' && state.battleTimerMs <= 8_000}`;
+    timerBoxEl.dataset.complete = `${state.phase === 'ended'}`;
+    playfieldFrameEl.dataset.locked = `${state.phase === 'ended'}`;
+    restartButton.disabled = state.phase === 'battle';
+    if (skipBattleButton) {
+      skipBattleButton.disabled = state.phase !== 'battle';
+    }
+    retireButton.disabled = state.phase !== 'battle';
     submitButton.hidden = !options.leaderboardSubmitEnabled || !state.leaderboard.canSubmit;
     submitButton.disabled = !state.leaderboard.canSubmit;
     submitButton.title = state.leaderboard.submitReason ?? '';
     leaderboardButton.dataset.enabled = `${options.leaderboardReadEnabled}`;
+    soundToggleButton.dataset.enabled = `${soundEnabled}`;
+    musicToggleButton.dataset.enabled = `${musicEnabled}`;
 
+    commandGridEl.innerHTML = renderCommandGrid(state);
+    enemySummaryEl.innerHTML = renderEnemySummary(state);
+    enemySummaryEl.hidden = state.enemies.every((enemy) => enemy.currentHp <= 0);
     renderOverlay();
+  };
+
+  const setSoundEnabled = (enabled: boolean): void => {
+    soundEnabled = enabled;
+    soundToggleButton.dataset.enabled = `${soundEnabled}`;
+  };
+
+  const setMusicEnabled = (enabled: boolean): void => {
+    musicEnabled = enabled;
+    musicToggleButton.dataset.enabled = `${musicEnabled}`;
   };
 
   const showLeaderboardLoading = (): void => {
@@ -421,39 +530,6 @@ export function createHud(
     renderOverlay();
   };
 
-  const openCawLab = (tuning: CrowCawTuning): void => {
-    overlayMode = 'cawDebug';
-    cawLabState = {
-      tuning: { ...tuning },
-      message: '',
-      status: 'idle',
-    };
-    renderOverlay();
-  };
-
-  const syncCawLab = (tuning: CrowCawTuning): void => {
-    cawLabState = {
-      ...cawLabState,
-      tuning: { ...tuning },
-    };
-
-    if (overlayMode === 'cawDebug') {
-      renderOverlay();
-    }
-  };
-
-  const setCawLabMessage = (message: string, status: 'idle' | 'success' | 'error'): void => {
-    cawLabState = {
-      ...cawLabState,
-      message,
-      status,
-    };
-
-    if (overlayMode === 'cawDebug') {
-      renderOverlay();
-    }
-  };
-
   const setSubmitBusy = (): void => {
     submitState = {
       ...submitState,
@@ -482,68 +558,50 @@ export function createHud(
   };
 
   const closeOverlay = (): void => {
+    if (currentState.pendingUpgrades) {
+      return;
+    }
+
     overlayMode = null;
     ensuredOverlayEl.dataset.mode = '';
-    overlayEl.hidden = true;
+    ensuredOverlayEl.hidden = true;
   };
 
-  function handleCawTuningInput(target: HTMLInputElement | HTMLSelectElement): void {
-    const field = target.dataset.cawField as keyof CrowCawTuning | undefined;
-
-    if (!field) {
-      return;
-    }
-
-    const nextValue = parseCawFieldValue(field, target.value);
-
-    cawLabState = {
-      ...cawLabState,
-      tuning: {
-        ...cawLabState.tuning,
-        [field]: nextValue,
-      },
-      message: '',
-      status: 'idle',
-    };
-
-    updateCawTuningHandlers.forEach((handler) => handler({ [field]: nextValue }));
-    syncCawRowValue(target, nextValue);
-  }
-
   function renderOverlay(): void {
-    if (!overlayMode) {
-      ensuredOverlayEl.hidden = true;
-      ensuredOverlayEl.dataset.mode = '';
-      ensuredOverlayBodyEl.innerHTML = '';
-      return;
-    }
-
-    ensuredOverlayEl.hidden = false;
-    ensuredOverlayEl.dataset.mode = overlayMode;
-
     if (overlayMode === 'leaderboard') {
+      ensuredOverlayEl.hidden = false;
+      ensuredOverlayEl.dataset.mode = 'leaderboard';
+      ensuredOverlayCloseButton.hidden = false;
       ensuredOverlayTitleEl.textContent = 'Top 100';
       ensuredOverlayBodyEl.innerHTML = renderLeaderboardOverlay(leaderboardState);
       return;
     }
 
-    if (overlayMode === 'collection') {
-      ensuredOverlayTitleEl.textContent = 'Collection';
-      ensuredOverlayBodyEl.innerHTML = renderCollectionOverlay(currentState);
+    if (overlayMode === 'submit') {
+      ensuredOverlayEl.hidden = false;
+      ensuredOverlayEl.dataset.mode = 'submit';
+      ensuredOverlayCloseButton.hidden = false;
+      ensuredOverlayTitleEl.textContent = 'Submit Score';
+      ensuredOverlayBodyEl.innerHTML = renderSubmitOverlay(submitState, currentState.leaderboard.submitScore);
+      const initialsInput = ensuredOverlayBodyEl.querySelector<HTMLInputElement>('[data-initials-input]');
+      initialsInput?.focus();
+      initialsInput?.setSelectionRange(initialsInput.value.length, initialsInput.value.length);
       return;
     }
 
-    if (overlayMode === 'cawDebug') {
-      ensuredOverlayTitleEl.textContent = 'Caw Lab';
-      ensuredOverlayBodyEl.innerHTML = renderCawDebugOverlay(cawLabState);
+    if (currentState.pendingUpgrades) {
+      ensuredOverlayEl.hidden = false;
+      ensuredOverlayEl.dataset.mode = 'upgrade';
+      ensuredOverlayCloseButton.hidden = true;
+      ensuredOverlayTitleEl.textContent = 'Permanent Upgrade';
+      ensuredOverlayBodyEl.innerHTML = renderUpgradeOverlay(currentState);
       return;
     }
 
-    ensuredOverlayTitleEl.textContent = 'Submit Score';
-    ensuredOverlayBodyEl.innerHTML = renderSubmitOverlay(submitState, currentState.highScore);
-    const initialsInput = ensuredOverlayBodyEl.querySelector<HTMLInputElement>('[data-initials-input]');
-    initialsInput?.focus();
-    initialsInput?.setSelectionRange(initialsInput.value.length, initialsInput.value.length);
+    ensuredOverlayEl.hidden = true;
+    ensuredOverlayEl.dataset.mode = '';
+    ensuredOverlayBodyEl.innerHTML = '';
+    ensuredOverlayCloseButton.hidden = false;
   }
 
   render(initialState);
@@ -551,10 +609,31 @@ export function createHud(
   return {
     canvasHost,
     render,
+    setSoundEnabled,
+    setMusicEnabled,
     setStatus,
+    pulsePlayerDamage,
     pulseTimer,
     onRestart(handler: () => void) {
       restartHandlers.add(handler);
+    },
+    onSkipBattle(handler: () => void) {
+      skipBattleHandlers.add(handler);
+    },
+    onRetire(handler: () => void) {
+      retireHandlers.add(handler);
+    },
+    onToggleSound(handler: () => void) {
+      toggleSoundHandlers.add(handler);
+    },
+    onToggleMusic(handler: () => void) {
+      toggleMusicHandlers.add(handler);
+    },
+    onSelectAction(handler: (action: PlayerActionId) => void) {
+      selectActionHandlers.add(handler);
+    },
+    onChooseUpgrade(handler: (upgradeId: PermanentUpgradeId) => void) {
+      chooseUpgradeHandlers.add(handler);
     },
     onOpenLeaderboard(handler: () => void) {
       openLeaderboardHandlers.add(handler);
@@ -568,34 +647,78 @@ export function createHud(
     onSubmitScore(handler: (initials: string) => void) {
       submitHandlers.add(handler);
     },
-    onOpenCawLab(handler: () => void) {
-      openCawLabHandlers.add(handler);
-    },
-    onPreviewCaw(handler: () => void) {
-      previewCawHandlers.add(handler);
-    },
-    onUpdateCawTuning(handler: (patch: Partial<CrowCawTuning>) => void) {
-      updateCawTuningHandlers.add(handler);
-    },
-    onResetCawTuning(handler: () => void) {
-      resetCawTuningHandlers.add(handler);
-    },
-    onExportCawPreset(handler: (tuning: CrowCawTuning) => void) {
-      exportCawPresetHandlers.add(handler);
-    },
     showLeaderboardLoading,
     showLeaderboardEntries,
     showLeaderboardError,
     showLeaderboardUnavailable,
     openSubmitDialog,
-    openCawLab,
-    syncCawLab,
-    setCawLabMessage,
     setSubmitBusy,
     setSubmitError,
     setSubmitSuccess,
     closeOverlay,
   };
+}
+
+function renderCommandGrid(state: MatchCrowViewState): string {
+  return (['attack', 'defend', 'heal'] as const)
+    .map((action) => {
+      const selected = state.selectedAction === action;
+      const disabled = state.phase !== 'battle';
+
+      return `
+        <button
+          type="button"
+          class="command-button${selected ? ' command-button-selected' : ''}"
+          data-action-id="${action}"
+          ${disabled ? 'disabled' : ''}
+        >
+          <strong>${escapeHtml(capitalize(action))}</strong>
+        </button>
+      `;
+    })
+    .join('');
+}
+
+function renderEnemySummary(state: MatchCrowViewState): string {
+  const livingEnemies = state.enemies.filter((enemy) => enemy.currentHp > 0);
+
+  if (livingEnemies.length === 0) {
+    return '';
+  }
+
+  return livingEnemies
+    .map(
+      (enemy) => `
+        <div class="enemy-summary-row">
+          <span class="enemy-summary-name">${escapeHtml(enemy.name)}</span>
+          <strong class="enemy-summary-hp">${enemy.currentHp}/${enemy.maxHp}</strong>
+        </div>
+      `,
+    )
+    .join('');
+}
+
+function renderUpgradeOverlay(state: MatchCrowViewState): string {
+  return `
+    <section class="upgrade-screen">
+      <p class="overlay-copy">Choose ${state.pendingUpgrades?.remainingChoices ?? 0} permanent upgrade${
+        (state.pendingUpgrades?.remainingChoices ?? 0) === 1 ? '' : 's'
+      }. They apply on your next run.</p>
+      <p class="overlay-message overlay-message-success">
+        Run score ${state.score.toString().padStart(6, '0')} earned +${state.postRun.awardedXp} XP.
+      </p>
+      <div class="upgrade-grid">
+        ${PERMANENT_UPGRADE_OPTIONS.map(
+          (option) => `
+            <button type="button" class="upgrade-card" data-upgrade-id="${option.id}">
+              <strong>${escapeHtml(option.label)}</strong>
+              <span>${escapeHtml(option.description)}</span>
+            </button>
+          `,
+        ).join('')}
+      </div>
+    </section>
+  `;
 }
 
 function renderLeaderboardOverlay(state: LeaderboardOverlayState): string {
@@ -630,7 +753,10 @@ function renderLeaderboardOverlay(state: LeaderboardOverlayState): string {
           return `
             <div class="${classes}">
               <span class="leaderboard-rank">${index + 1}</span>
-              <span class="leaderboard-initials">${escapeHtml(entry.initials)}</span>
+              <div class="leaderboard-copy">
+                <span class="leaderboard-initials">${escapeHtml(entry.initials)}</span>
+                <span class="leaderboard-level">Lv ${entry.level}</span>
+              </div>
               <span class="leaderboard-score">${entry.score.toString().padStart(6, '0')}</span>
             </div>
           `;
@@ -640,7 +766,7 @@ function renderLeaderboardOverlay(state: LeaderboardOverlayState): string {
   `;
 }
 
-function renderSubmitOverlay(state: SubmitOverlayState, highScore: number): string {
+function renderSubmitOverlay(state: SubmitOverlayState, score: number): string {
   const statusClass =
     state.status === 'error'
       ? 'overlay-message overlay-message-error'
@@ -650,7 +776,7 @@ function renderSubmitOverlay(state: SubmitOverlayState, highScore: number): stri
 
   return `
     <form class="submit-form" data-submit-form="true">
-      <p class="overlay-copy">Post your local best of ${highScore.toString().padStart(6, '0')}.</p>
+      <p class="overlay-copy">Post this run score of ${score.toString().padStart(6, '0')}.</p>
       <label class="submit-label" for="submit-initials">Initials</label>
       <input
         id="submit-initials"
@@ -675,287 +801,6 @@ function renderSubmitOverlay(state: SubmitOverlayState, highScore: number): stri
   `;
 }
 
-function renderCollectionOverlay(state: MatchCrowViewState): string {
-  const roleOrder = ['damage', 'guard', 'grit', 'heal', 'weak'] as const;
-  const unlockedKinds = new Set(state.unlocks.unlockedTileKinds);
-  const activeKinds = new Set(Object.values(state.unlocks.runTilePool));
-  const activeTiles = getRunPoolDefinitions(state.unlocks.runTilePool);
-  const roadmap = getRoadmapUnlocks();
-  const allTiles = getTileDefinitions();
-  const newUnlockLabels = state.unlocks.newlyUnlockedTileKinds
-    .map((kind) => allTiles.find((definition) => definition.kind === kind)?.label ?? kind)
-    .join(', ');
-  const progressPercent = Math.max(0, Math.min(100, Math.round(state.progression.progressRatio * 100)));
-
-  return `
-    <section class="collection-screen">
-      ${
-        newUnlockLabels
-          ? `<p class="overlay-message overlay-message-success">New for next run: ${escapeHtml(newUnlockLabels)}.</p>`
-          : ''
-      }
-      <div class="collection-summary">
-        <section class="collection-panel">
-          <p class="collection-kicker">Progression</p>
-          <div class="collection-level-row">
-            <strong class="collection-level-value">Level ${state.progression.level}</strong>
-            <span class="collection-level-detail">${formatLevelXp(
-              state.progression.xpIntoLevel,
-              state.progression.xpForNextLevel,
-            )}</span>
-          </div>
-          <div class="collection-progress">
-            <span class="collection-progress-fill" style="width: ${progressPercent}%"></span>
-          </div>
-        </section>
-        <section class="collection-panel">
-          <p class="collection-kicker">Active This Run</p>
-          <div class="collection-active-grid">
-            ${activeTiles
-              .map((definition) =>
-                renderCollectionTileCard(definition, ['Active This Run', TILE_ROLE_LABELS[definition.role]]),
-              )
-              .join('')}
-          </div>
-        </section>
-      </div>
-
-      <section class="collection-panel">
-        <p class="collection-kicker">Roadmap</p>
-        <div class="collection-roadmap">
-          ${roadmap
-            .map((definition) => {
-              const unlocked = state.progression.level >= definition.unlockLevel;
-              return `
-                <div class="collection-roadmap-row" data-unlocked="${unlocked}">
-                  <span class="collection-roadmap-level">LV ${definition.unlockLevel}</span>
-                  <span class="collection-roadmap-name">${escapeHtml(definition.label)}</span>
-                  <span class="collection-roadmap-role">${escapeHtml(TILE_ROLE_LABELS[definition.role])}</span>
-                </div>
-              `;
-            })
-            .join('')}
-        </div>
-      </section>
-
-      <div class="collection-groups">
-        ${roleOrder
-          .map((role) => {
-            const roleTiles = allTiles.filter((definition) => definition.role === role);
-            return `
-              <section class="collection-panel">
-                <div class="collection-group-head">
-                  <p class="collection-kicker">${escapeHtml(TILE_ROLE_LABELS[role])}</p>
-                  <span class="collection-group-note">1 active per run</span>
-                </div>
-                <div class="collection-tile-grid">
-                  ${roleTiles
-                    .map((definition) => {
-                      const badges = [
-                        isBaseTileKind(definition.kind) ? 'Base' : null,
-                        unlockedKinds.has(definition.kind) ? 'Unlocked' : 'Locked',
-                        activeKinds.has(definition.kind) ? 'Active This Run' : null,
-                      ].filter((badge): badge is string => Boolean(badge));
-
-                      return renderCollectionTileCard(definition, badges);
-                    })
-                    .join('')}
-                </div>
-              </section>
-            `;
-          })
-          .join('')}
-      </div>
-    </section>
-  `;
-}
-
-function renderCollectionTileCard(definition: TileDefinition, badges: string[]): string {
-  const texturePath = TEXTURE_FILE_PATHS[definition.textureKey] ?? '';
-
-  return `
-    <article class="collection-tile-card">
-      <div class="collection-tile-head">
-        <img
-          class="collection-tile-sprite"
-          src="${escapeAttribute(texturePath)}"
-          alt="${escapeAttribute(definition.label)}"
-        />
-        <div class="collection-tile-copy">
-          <strong>${escapeHtml(definition.label)}</strong>
-          <span>Level ${definition.unlockLevel}</span>
-        </div>
-      </div>
-      <div class="collection-badges">
-        ${badges
-          .map((badge) => `<span class="collection-badge">${escapeHtml(badge)}</span>`)
-          .join('')}
-      </div>
-    </article>
-  `;
-}
-
-function renderCawDebugOverlay(state: CawLabOverlayState): string {
-  const tuning = state.tuning;
-  const statusClass =
-    state.status === 'error'
-      ? 'overlay-message overlay-message-error'
-      : state.status === 'success'
-        ? 'overlay-message overlay-message-success'
-        : 'overlay-message';
-
-  return `
-    <section class="caw-lab">
-      <p class="overlay-copy">Preview and tune the synthetic crow call live.</p>
-      <div class="overlay-actions overlay-actions-spread caw-lab-actions">
-        <button type="button" class="overlay-action" data-preview-caw>Preview Caw</button>
-        <button type="button" class="overlay-action" data-export-caw>Export Preset</button>
-        <button type="button" class="overlay-action overlay-action-secondary" data-reset-caw>
-          Reset Defaults
-        </button>
-      </div>
-      <p class="${statusClass}">
-        ${escapeHtml(
-          state.message || 'Export copies a full DEFAULT_CROW_CAW_TUNING block for MatchCrowSfx.ts.',
-        )}
-      </p>
-      <div class="caw-grid">
-        ${renderCawSlider('noiseMs', 'Noise Burst', tuning.noiseMs, 10, 20, 0.5)}
-        ${renderCawSlider('noiseGain', 'Noise Gain', tuning.noiseGain, 0.002, 0.05, 0.001)}
-        ${renderCawSlider('attackMs', 'Attack', tuning.attackMs, 5, 40, 0.5)}
-        ${renderCawSlider('bodyMs', 'Body Length', tuning.bodyMs, 180, 320, 1)}
-        ${renderCawSelect('leadWave', 'Lead Wave', tuning.leadWave)}
-        ${renderCawSelect('bodyWave', 'Body Wave', tuning.bodyWave)}
-        ${renderCawSlider('leadGain', 'Lead Gain', tuning.leadGain, 0.004, 0.05, 0.001)}
-        ${renderCawSlider('bodyGain', 'Body Gain', tuning.bodyGain, 0.004, 0.05, 0.001)}
-        ${renderCawSlider('leadFreq', 'Lead Pitch', tuning.leadFreq, 300, 650, 1)}
-        ${renderCawSlider('bodyFreq', 'Body Pitch', tuning.bodyFreq, 260, 600, 1)}
-        ${renderCawSlider('endFreq', 'Tail Pitch', tuning.endFreq, 120, 320, 1)}
-        ${renderCawSlider('detuneCents', 'Detune', tuning.detuneCents, 0, 40, 0.5)}
-        ${renderCawSlider('bandpassStart', 'Bandpass Start', tuning.bandpassStart, 500, 2200, 5)}
-        ${renderCawSlider('bandpassEnd', 'Bandpass End', tuning.bandpassEnd, 220, 900, 5)}
-        ${renderCawSlider('lowpassStart', 'Lowpass Start', tuning.lowpassStart, 900, 3200, 10)}
-        ${renderCawSlider('lowpassEnd', 'Lowpass End', tuning.lowpassEnd, 260, 1000, 5)}
-        ${renderCawSlider('raspAmount', 'Rasp', tuning.raspAmount, 0, 80, 1)}
-        ${renderCawSlider('pitchJitterPercent', 'Pitch Jitter', tuning.pitchJitterPercent, 0, 10, 0.1)}
-        ${renderCawSlider(
-          'durationJitterPercent',
-          'Duration Jitter',
-          tuning.durationJitterPercent,
-          0,
-          10,
-          0.1,
-        )}
-      </div>
-    </section>
-  `;
-}
-
-function renderCawSlider(
-  field: Exclude<keyof CrowCawTuning, 'leadWave' | 'bodyWave'>,
-  label: string,
-  value: number,
-  min: number,
-  max: number,
-  step: number,
-): string {
-  const id = `caw-${field}`;
-
-  return `
-    <label class="caw-control" for="${id}" data-caw-row>
-      <span class="caw-control-head">
-        <span class="caw-control-label">${label}</span>
-        <span class="caw-control-value" data-caw-value>${formatCawFieldValue(field, value)}</span>
-      </span>
-      <input
-        id="${id}"
-        class="caw-slider"
-        type="range"
-        min="${min}"
-        max="${max}"
-        step="${step}"
-        value="${value}"
-        data-caw-field="${field}"
-      />
-    </label>
-  `;
-}
-
-function renderCawSelect(
-  field: Extract<keyof CrowCawTuning, 'leadWave' | 'bodyWave'>,
-  label: string,
-  value: CrowCawWaveform,
-): string {
-  const id = `caw-${field}`;
-
-  return `
-    <label class="caw-control" for="${id}" data-caw-row>
-      <span class="caw-control-head">
-        <span class="caw-control-label">${label}</span>
-        <span class="caw-control-value" data-caw-value>${escapeHtml(value)}</span>
-      </span>
-      <select id="${id}" class="caw-select" data-caw-field="${field}">
-        ${CROW_CAW_WAVEFORMS.map((waveform) => {
-          const selected = waveform === value ? 'selected' : '';
-          return `<option value="${waveform}" ${selected}>${waveform}</option>`;
-        }).join('')}
-      </select>
-    </label>
-  `;
-}
-
-function parseCawFieldValue(field: keyof CrowCawTuning, rawValue: string): number | CrowCawWaveform {
-  if (field === 'leadWave' || field === 'bodyWave') {
-    return CROW_CAW_WAVEFORMS.includes(rawValue as CrowCawWaveform)
-      ? (rawValue as CrowCawWaveform)
-      : CROW_CAW_WAVEFORMS[0];
-  }
-
-  const parsed = Number(rawValue);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function syncCawRowValue(
-  target: HTMLInputElement | HTMLSelectElement,
-  value: number | CrowCawWaveform,
-): void {
-  const field = target.dataset.cawField as keyof CrowCawTuning | undefined;
-  const valueEl = target.closest<HTMLElement>('[data-caw-row]')?.querySelector<HTMLElement>('[data-caw-value]');
-
-  if (!field || !valueEl) {
-    return;
-  }
-
-  valueEl.textContent = formatCawFieldValue(field, value);
-}
-
-function formatCawFieldValue(
-  field: keyof CrowCawTuning,
-  value: number | CrowCawWaveform,
-): string {
-  if (field === 'leadWave' || field === 'bodyWave') {
-    return `${value}`;
-  }
-
-  if (field === 'noiseMs' || field === 'attackMs' || field === 'bodyMs') {
-    return `${Number(value).toFixed(field === 'bodyMs' ? 0 : 1).replace(/\.0$/, '')} ms`;
-  }
-
-  if (field === 'leadFreq' || field === 'bodyFreq' || field === 'endFreq' || field === 'bandpassStart' || field === 'bandpassEnd' || field === 'lowpassStart' || field === 'lowpassEnd') {
-    return `${Math.round(Number(value))} Hz`;
-  }
-
-  if (field === 'detuneCents') {
-    return `${Number(value).toFixed(1).replace(/\.0$/, '')} ct`;
-  }
-
-  if (field === 'pitchJitterPercent' || field === 'durationJitterPercent') {
-    return `${Number(value).toFixed(1).replace(/\.0$/, '')}%`;
-  }
-
-  return Number(value).toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
-}
-
 function escapeHtml(value: string): string {
   return value
     .replaceAll('&', '&amp;')
@@ -970,17 +815,25 @@ function escapeAttribute(value: string): string {
 }
 
 function formatRemainingTime(timeRemainingMs: number): string {
-  const totalSeconds = Math.ceil(Math.max(0, timeRemainingMs) / 1000);
+  const totalSeconds = Math.ceil(Math.max(0, timeRemainingMs) / 1_000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
 function formatBonusSeconds(bonusTimeMs: number): string {
-  const seconds = bonusTimeMs / 1000;
+  const seconds = bonusTimeMs / 1_000;
   return Number.isInteger(seconds) ? `${seconds}` : seconds.toFixed(1).replace(/\.0$/, '');
 }
 
 function formatLevelXp(xpIntoLevel: number, xpForNextLevel: number): string {
   return `${Math.max(0, Math.floor(xpIntoLevel))} / ${Math.max(1, Math.floor(xpForNextLevel))} XP`;
+}
+
+function formatHp(currentHp: number, maxHp: number): string {
+  return `${currentHp}/${maxHp}`;
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
