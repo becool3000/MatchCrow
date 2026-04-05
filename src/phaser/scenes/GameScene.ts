@@ -62,6 +62,7 @@ interface ActiveMusicNote {
 }
 
 const MUSIC_NOTE_COLORS = ['#ffcf6b', '#ff87c9', '#7dd8ff', '#94f7a9', '#c1a2ff'];
+const LOVE_HEART_COLORS = ['#ff7aa8', '#ff98c5', '#ffb3d7', '#ff5f8e'];
 
 function createEnemyTextureKeyMap(): Record<string, string> {
   return Object.fromEntries(ENEMY_TEXTURE_KEYS.map((enemyId) => [enemyId, enemyId]));
@@ -388,9 +389,15 @@ export class GameScene extends Phaser.Scene {
         const actor = this.enemyActors.get(event.enemyId);
 
         if (actor) {
+          const impactPoint = actor.getFocusPoint();
           await actor.takeHit();
           void playCombatImpactCue(this, 0.9 + event.amount / 18);
-          this.spawnFloatingText(`-${event.amount + event.blocked}`, actor.getFocusPoint(), '#ffcf9c');
+          this.spawnLoveBurst(impactPoint, event.amount + event.blocked, event.defeated);
+          this.spawnFloatingText(
+            `♥ ${event.amount + event.blocked}`,
+            impactPoint.clone().add(new Phaser.Math.Vector2(0, -this.layout.tileSize * 0.12)),
+            '#ff9bc6',
+          );
 
           if (event.defeated) {
             await actor.faint();
@@ -808,6 +815,68 @@ export class GameScene extends Phaser.Scene {
       strokeThickness: 3,
     }).setOrigin(0.5).setDepth(60);
     this.tweens.add({ targets: label, y: point.y - this.layout.tileSize * 0.65, alpha: 0, duration: 500, ease: 'Quad.Out', onComplete: () => label.destroy() });
+  }
+
+  private spawnLoveBurst(
+    point: Phaser.Math.Vector2,
+    intensity: number,
+    defeated: boolean,
+  ): void {
+    const heartCount = Phaser.Math.Clamp(
+      3 + Math.floor(intensity / 4) + (defeated ? 1 : 0),
+      3,
+      8,
+    );
+
+    for (let index = 0; index < heartCount; index += 1) {
+      const heart = this.add
+        .text(point.x, point.y, '♥', {
+          fontFamily: 'VT323',
+          fontSize: `${Math.max(14, Math.round(this.layout.tileSize * Phaser.Math.FloatBetween(0.36, 0.58)))}px`,
+          color: Phaser.Utils.Array.GetRandom(LOVE_HEART_COLORS),
+          stroke: '#2b1021',
+          strokeThickness: 3,
+        })
+        .setOrigin(0.5)
+        .setDepth(61)
+        .setAlpha(0.96)
+        .setRotation(Phaser.Math.FloatBetween(-0.28, 0.28));
+
+      const offsetX = Phaser.Math.Between(
+        -Math.round(this.layout.tileSize * 0.48),
+        Math.round(this.layout.tileSize * 0.48),
+      );
+      const offsetY = Phaser.Math.Between(
+        -Math.round(this.layout.tileSize * 0.38),
+        Math.round(this.layout.tileSize * 0.12),
+      );
+      const riseY = Phaser.Math.Between(
+        Math.round(this.layout.tileSize * 0.52),
+        Math.round(this.layout.tileSize * 0.92),
+      );
+      const driftX = Phaser.Math.Between(
+        -Math.round(this.layout.tileSize * 0.28),
+        Math.round(this.layout.tileSize * 0.28),
+      );
+      const startScale = Phaser.Math.FloatBetween(0.72, 1.08);
+      const endScale = startScale * Phaser.Math.FloatBetween(1.18, 1.42);
+
+      heart.setPosition(point.x + offsetX, point.y + offsetY);
+      heart.setScale(startScale);
+
+      this.tweens.add({
+        targets: heart,
+        x: heart.x + driftX,
+        y: heart.y - riseY,
+        scale: endScale,
+        alpha: 0,
+        rotation: heart.rotation + Phaser.Math.FloatBetween(-0.22, 0.22),
+        duration: Phaser.Math.Between(420, 680),
+        delay: index * 28,
+        ease: 'Quad.Out',
+        onComplete: () => heart.destroy(),
+      });
+    }
   }
 
   private handleResize(gameSize: Phaser.Structs.Size): void {
