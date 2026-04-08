@@ -13,6 +13,20 @@ export type PlayerActionId = 'attack' | 'defend' | 'heal';
 export type RunEndedReason = 'defeat' | 'retire' | 'timeout';
 export type PermanentUpgradeId = 'heart' | 'claw' | 'bark' | 'herb';
 export type EnemyIntentType = 'attack' | 'guard' | 'heal';
+export type RunBoonTier = 'minor' | 'major';
+export type CheckpointOptionId = 'boon-draft' | 'recover' | 'bank-time';
+export type RunBoonId =
+  | 'first-crush'
+  | 'feather-bed'
+  | 'afterglow'
+  | 'soft-guard'
+  | 'big-feelings'
+  | 'cascade-kiss'
+  | 'time-siphon'
+  | 'lucky-swing'
+  | 'royal-tempo'
+  | 'overwhelming-heart'
+  | 'unshaken';
 
 export interface EnemyIntentPattern {
   type: EnemyIntentType;
@@ -49,6 +63,20 @@ export interface PermanentUpgradeOption {
   description: string;
 }
 
+export interface CheckpointOptionDefinition {
+  id: CheckpointOptionId;
+  label: string;
+  description: string;
+}
+
+export interface RunBoonDefinition {
+  id: RunBoonId;
+  tier: RunBoonTier;
+  label: string;
+  description: string;
+  stackCap: number;
+}
+
 export const NORMAL_BATTLE_TIMER_MS = 35_000;
 export const BOSS_BATTLE_TIMER_MS = 55_000;
 
@@ -74,6 +102,110 @@ export const PERMANENT_UPGRADE_OPTIONS: PermanentUpgradeOption[] = [
     description: '+3 heal power for future runs.',
   },
 ];
+
+export const REGULAR_CHECKPOINT_BATTLES = [3, 6, 9, 13, 16, 19, 23, 26, 29] as const;
+export const BOSS_CHECKPOINT_BATTLES = [10, 20, 30] as const;
+
+export const CHECKPOINT_OPTION_DEFINITIONS: Record<
+  CheckpointOptionId,
+  CheckpointOptionDefinition
+> = {
+  'boon-draft': {
+    id: 'boon-draft',
+    label: 'Boon Draft',
+    description: 'Pick 1 of 3 minor run boons.',
+  },
+  recover: {
+    id: 'recover',
+    label: 'Recover',
+    description: 'Heal 30% of missing HP.',
+  },
+  'bank-time': {
+    id: 'bank-time',
+    label: 'Bank Time',
+    description: 'Gain +8.0s on the clock.',
+  },
+};
+
+export const RUN_BOON_DEFINITIONS: Record<RunBoonId, RunBoonDefinition> = {
+  'first-crush': {
+    id: 'first-crush',
+    tier: 'minor',
+    label: 'First Crush',
+    description: 'First Attack each battle deals +4 damage per stack.',
+    stackCap: 2,
+  },
+  'feather-bed': {
+    id: 'feather-bed',
+    tier: 'minor',
+    label: 'Feather Bed',
+    description: 'Start each battle with +6 shield per stack.',
+    stackCap: 2,
+  },
+  afterglow: {
+    id: 'afterglow',
+    tier: 'minor',
+    label: 'Afterglow',
+    description: 'Every Heal also grants +4 shield per stack.',
+    stackCap: 2,
+  },
+  'soft-guard': {
+    id: 'soft-guard',
+    tier: 'minor',
+    label: 'Soft Guard',
+    description: 'Every Defend also heals 2 HP per stack.',
+    stackCap: 2,
+  },
+  'big-feelings': {
+    id: 'big-feelings',
+    tier: 'minor',
+    label: 'Big Feelings',
+    description: 'Every 4+ resolve step adds +2 turn power per stack.',
+    stackCap: 2,
+  },
+  'cascade-kiss': {
+    id: 'cascade-kiss',
+    tier: 'minor',
+    label: 'Cascade Kiss',
+    description: 'Every cascade step after the first adds +1 turn power per stack.',
+    stackCap: 2,
+  },
+  'time-siphon': {
+    id: 'time-siphon',
+    tier: 'minor',
+    label: 'Time Siphon',
+    description: 'Killing an enemy adds +3.0s per stack.',
+    stackCap: 2,
+  },
+  'lucky-swing': {
+    id: 'lucky-swing',
+    tier: 'minor',
+    label: 'Lucky Swing',
+    description: 'Moves clearing 8+ tiles add +2.0s per stack.',
+    stackCap: 2,
+  },
+  'royal-tempo': {
+    id: 'royal-tempo',
+    tier: 'major',
+    label: 'Royal Tempo',
+    description: 'Boss kills heal 25% missing HP and add +8.0s.',
+    stackCap: 1,
+  },
+  'overwhelming-heart': {
+    id: 'overwhelming-heart',
+    tier: 'major',
+    label: 'Overwhelming Heart',
+    description: 'Attack turns with a 4+ step deal +50% final damage.',
+    stackCap: 1,
+  },
+  unshaken: {
+    id: 'unshaken',
+    tier: 'major',
+    label: 'Unshaken',
+    description: 'Enter boss battles with +12 shield and +6 heal power.',
+    stackCap: 1,
+  },
+};
 
 export const ENEMY_DEFINITIONS: Record<EnemyId, EnemyDefinition> = {
   mite: {
@@ -292,4 +424,12 @@ export function getBattleTimerMs(battleIndex: number): number {
 
 export function getBattleClearBonus(battleIndex: number): number {
   return isBossBattle(battleIndex) ? 300 * battleIndex : 100 * battleIndex;
+}
+
+export function isRegularCheckpointBattle(battleIndex: number): boolean {
+  return REGULAR_CHECKPOINT_BATTLES.includes(battleIndex as (typeof REGULAR_CHECKPOINT_BATTLES)[number]);
+}
+
+export function isBossCheckpointBattle(battleIndex: number): boolean {
+  return BOSS_CHECKPOINT_BATTLES.includes(battleIndex as (typeof BOSS_CHECKPOINT_BATTLES)[number]);
 }

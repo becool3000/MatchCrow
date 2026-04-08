@@ -1,12 +1,9 @@
 import {
   collection,
-  doc,
   getDocs,
   limit,
   orderBy,
   query,
-  runTransaction,
-  serverTimestamp,
 } from 'firebase/firestore';
 import { getFirebaseClients, isFirebaseConfigured } from '../firebase/client.ts';
 
@@ -134,59 +131,30 @@ export async function submitScore(request: SubmitScoreRequest): Promise<SubmitRe
     throw new Error('Loop count must be a non-negative integer.');
   }
 
-  const { firestore } = getFirebaseClients();
-  const entryRef = doc(firestore, 'leaderboard', request.playerId);
+  const { app } = getFirebaseClients();
+  const projectId = app.options.projectId;
 
-  return runTransaction(firestore, async (transaction) => {
-    const snapshot = await transaction.get(entryRef);
+  if (!projectId) {
+    throw new Error('Firebase project ID is missing.');
+  }
 
-    if (!snapshot.exists()) {
-      transaction.set(entryRef, {
-        playerId: request.playerId,
+  const response = await fetch(
+    `https://us-central1-${projectId}.cloudfunctions.net/submitHighScoreHttp`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        ...request,
         initials,
-        score: request.score,
-        level: request.level,
-        battleReached: request.battleReached,
-        loopCount: request.loopCount,
-        endedBy: request.endedBy,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      }),
+    },
+  );
 
-      return {
-        accepted: true,
-        replacedBest: true,
-        score: request.score,
-        initials,
-      };
-    }
+  if (!response.ok) {
+    throw new Error('Score submission failed.');
+  }
 
-    const existingScore = snapshot.get('score');
-
-    if (!Number.isSafeInteger(existingScore) || request.score <= existingScore) {
-      return {
-        accepted: false,
-        replacedBest: false,
-        score: Number.isSafeInteger(existingScore) ? existingScore : request.score,
-        initials: (snapshot.get('initials') as string | undefined) ?? initials,
-      };
-    }
-
-    transaction.update(entryRef, {
-      initials,
-      score: request.score,
-      level: request.level,
-      battleReached: request.battleReached,
-      loopCount: request.loopCount,
-      endedBy: request.endedBy,
-      updatedAt: serverTimestamp(),
-    });
-
-    return {
-      accepted: true,
-      replacedBest: true,
-      score: request.score,
-      initials,
-    };
-  });
+  return (await response.json()) as SubmitResult;
 }

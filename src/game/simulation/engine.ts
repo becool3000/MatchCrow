@@ -1,14 +1,22 @@
 import {
   BOSS_BATTLE_TIMER_MS,
+  CHECKPOINT_OPTION_DEFINITIONS,
   ENEMY_DEFINITIONS,
   NORMAL_BATTLE_TIMER_MS,
+  RUN_BOON_DEFINITIONS,
   getBattleClearBonus,
   getBattleTimerMs,
   getEncounterDefinition,
+  isBossBattle,
+  isBossCheckpointBattle,
+  isRegularCheckpointBattle,
+  type CheckpointOptionId,
   type EnemyId,
   type EnemyIntentPattern,
   type EnemyIntentType,
   type PlayerActionId,
+  type RunBoonId,
+  type RunBoonTier,
   type RunEndedReason,
 } from '../campaignData.ts';
 import { DEFAULT_STATUS } from '../assets/manifest.ts';
@@ -42,8 +50,20 @@ export interface EnemyRuntimeState {
   boss: boolean;
 }
 
+export interface BattleFlags {
+  firstAttackUsed: boolean;
+  healPowerBonus: number;
+}
+
+export type RunBoonState = Record<RunBoonId, number>;
+
+export interface CampaignBoonDraftState {
+  tier: RunBoonTier;
+  options: RunBoonId[];
+}
+
 export interface CampaignRunState {
-  phase: 'battle' | 'ended';
+  phase: 'battle' | 'checkpoint' | 'boon-draft' | 'ended';
   battleIndex: number;
   loopCount: number;
   battleTimerMs: number;
@@ -57,6 +77,10 @@ export interface CampaignRunState {
   highScore: number;
   lastMessage: string;
   runEndedReason: RunEndedReason | null;
+  runBoons: RunBoonState;
+  checkpointOptions: CheckpointOptionId[] | null;
+  boonDraft: CampaignBoonDraftState | null;
+  battleFlags: BattleFlags;
 }
 
 export interface CampaignClockResult {
@@ -78,6 +102,8 @@ export type CampaignEvent =
   | { type: 'score'; amount: number }
   | { type: 'timer'; amount: number }
   | { type: 'battle-cleared'; bonus: number; battleIndex: number; nextBattleIndex: number; nextLoopCount: number }
+  | { type: 'checkpoint-ready'; checkpoint: 'regular' | 'boss'; nextBattleIndex: number; nextLoopCount: number }
+  | { type: 'boon-draft-ready'; tier: RunBoonTier; options: RunBoonId[] }
   | { type: 'run-ended'; reason: RunEndedReason };
 
 export interface CampaignResolution {
@@ -92,6 +118,21 @@ export interface CampaignResolution {
 }
 
 const PLAYER_BASE_MAX_HP = 40;
+const REGULAR_CHECKPOINT_OPTIONS: CheckpointOptionId[] = ['boon-draft', 'recover', 'bank-time'];
+const RECOVER_MISSING_HP_RATIO = 0.3;
+const CHECKPOINT_BANK_TIME_MS = 8_000;
+const FIRST_CRUSH_DAMAGE = 4;
+const FEATHER_BED_SHIELD = 6;
+const AFTERGLOW_SHIELD = 4;
+const SOFT_GUARD_HEAL = 2;
+const BIG_FEELINGS_POWER = 2;
+const CASCADE_KISS_POWER = 1;
+const TIME_SIPHON_MS = 3_000;
+const LUCKY_SWING_MS = 2_000;
+const ROYAL_TEMPO_TIME_MS = 8_000;
+const ROYAL_TEMPO_HEAL_RATIO = 0.25;
+const UNSHAKEN_BOSS_SHIELD = 12;
+const UNSHAKEN_BOSS_HEAL_POWER = 6;
 
 export function initializeRun(
   rng: () => number = Math.random,
@@ -105,6 +146,7 @@ export function initializeRun(
     loopCount: 0,
     player: createPlayerState(bonuses),
     score: 0,
+    runBoons: createEmptyRunBoons(),
   });
 }
 
@@ -119,10 +161,12 @@ export function createStateFromKinds(
     currentHp?: number;
     battleTimerMs?: number;
     battleTimerMaxMs?: number;
+    runBoons?: Partial<RunBoonState>;
   } = {},
 ): CampaignRunState {
   const bonuses = options.bonuses ?? createEmptyBonuses();
   const player = createPlayerState(bonuses);
+  const runBoons = mergeRunBoons(options.runBoons);
 
   player.currentHp = Math.min(player.maxHp, options.currentHp ?? player.maxHp);
 
@@ -135,6 +179,7 @@ export function createStateFromKinds(
     score: options.score ?? 0,
     battleTimerMs: options.battleTimerMs,
     battleTimerMaxMs: options.battleTimerMaxMs,
+    runBoons,
   });
 }
 
@@ -151,6 +196,70 @@ export function setSelectedAction(
     selectedAction: action,
     lastMessage: getActionSelectionMessage(action),
   };
+}
+
+export function chooseCheckpointOption(
+  currentState: CampaignRunState,
+  optionId: CheckpointOptionId,
+  rng: () => number = Math.random,
+): CampaignRunState {
+  if (
+    currentState.phase !== 'checkpoint' ||
+    !currentState.checkpointOptions ||
+    !currentState.checkpointOptions.includes(optionId)
+  ) {
+    return currentState;
+  }
+
+  if (optionId === 'boon-draft') {
+    return buildDraftState(currentState, 'minor', rng, 'Choose a minor boon.');
+  }
+
+  const nextState = cloneState(currentState);
+  nextState.checkpointOptions = null;
+
+  if (optionId === 'recover') {
+    const recoverAmount = Math.ceil((nextState.player.maxHp - nextState.player.currentHp) * RECOVER_MISSING_HP_RATIO);
+    nextState.player.currentHp = Math.min(nextState.player.maxHp, nextState.player.currentHp + recoverAmount);
+    nextState.lastMessage =
+      recoverAmount > 0
+        ? `Checkpoint recover restored ${recoverAmount} HP.`
+        : 'Checkpoint recover found no missing HP.';
+  } else {
+    nextState.battleTimerMs += CHECKPOINT_BANK_TIME_MS;
+    nextState.battleTimerMaxMs += CHECKPOINT_BANK_TIME_MS;
+    nextState.lastMessage = `Checkpoint banked +${CHECKPOINT_BANK_TIME_MS / 1_000}s.`;
+  }
+
+  return resumePendingBattle(nextState);
+}
+
+export function pickRunBoon(
+  currentState: CampaignRunState,
+  boonId: RunBoonId,
+): CampaignRunState {
+  if (
+    currentState.phase !== 'boon-draft' ||
+    !currentState.boonDraft ||
+    !currentState.boonDraft.options.includes(boonId)
+  ) {
+    return currentState;
+  }
+
+  const definition = RUN_BOON_DEFINITIONS[boonId];
+  const nextState = cloneState(currentState);
+  const currentStacks = nextState.runBoons[boonId];
+
+  if (currentStacks >= definition.stackCap) {
+    return currentState;
+  }
+
+  nextState.runBoons[boonId] = currentStacks + 1;
+  nextState.boonDraft = null;
+  nextState.checkpointOptions = null;
+  nextState.lastMessage = `${definition.label} joined this run.`;
+
+  return resumePendingBattle(nextState);
 }
 
 export function retireRun(currentState: CampaignRunState): CampaignRunState {
@@ -231,17 +340,17 @@ export function trySwap(
   const boardResult = trySwapOnBoard(currentState.board, from, to, rng, DEFAULT_RUN_TILE_POOL);
 
   if (!boardResult.accepted) {
+    const reason =
+      boardResult.reason === 'not-adjacent'
+        ? 'Only adjacent tiles can swap.'
+        : 'That swap does not make a match.';
+
     return rejectedResolution(
       {
         ...currentState,
-        lastMessage:
-          boardResult.reason === 'not-adjacent'
-            ? 'Only adjacent tiles can swap.'
-            : 'That swap does not make a match.',
+        lastMessage: reason,
       },
-      boardResult.reason === 'not-adjacent'
-        ? 'Only adjacent tiles can swap.'
-        : 'That swap does not make a match.',
+      reason,
     );
   }
 
@@ -250,10 +359,10 @@ export function trySwap(
   nextState.board = boardResult.board;
   nextState.selectedTargetId = getWeakestLivingEnemyId(nextState.enemies);
 
-  const turnSummary = summarizeBoardTurn(boardResult);
+  const turnSummary = summarizeBoardTurn(boardResult, nextState.runBoons);
   const selectedAction = nextState.selectedAction;
   const selectedTargetId = nextState.selectedTargetId;
-  let timerBonusApplied = 0;
+  let timerBonusApplied = turnSummary.luckySwingBonusMs;
   let clearBonusAwarded = 0;
   let battleAdvanced = false;
 
@@ -270,7 +379,21 @@ export function trySwap(
       );
     }
 
-    const attackAmount = turnSummary.turnPower + nextState.player.attackBonus;
+    let attackAmount = turnSummary.turnPower + nextState.player.attackBonus;
+    const firstCrushStacks = getRunBoonStacks(nextState.runBoons, 'first-crush');
+
+    if (!nextState.battleFlags.firstAttackUsed && firstCrushStacks > 0) {
+      attackAmount += firstCrushStacks * FIRST_CRUSH_DAMAGE;
+    }
+
+    if (
+      getRunBoonStacks(nextState.runBoons, 'overwhelming-heart') > 0 &&
+      turnSummary.hasBigMatch
+    ) {
+      attackAmount = Math.ceil(attackAmount * 1.5);
+    }
+
+    nextState.battleFlags.firstAttackUsed = true;
     const damageOutcome = applyDamage(target, attackAmount);
 
     events.push({
@@ -290,10 +413,28 @@ export function trySwap(
     nextState.highScore = Math.max(nextState.highScore, nextState.score);
     events.push({ type: 'score', amount: boardResult.totalScoreDelta });
 
-    timerBonusApplied = boardResult.totalBonusTimeMs;
-    nextState.battleTimerMs += timerBonusApplied;
+    timerBonusApplied += boardResult.totalBonusTimeMs;
+
+    if (target.currentHp <= 0) {
+      timerBonusApplied += getRunBoonStacks(nextState.runBoons, 'time-siphon') * TIME_SIPHON_MS;
+
+      if (target.boss && getRunBoonStacks(nextState.runBoons, 'royal-tempo') > 0) {
+        const healAmount = Math.ceil(
+          (nextState.player.maxHp - nextState.player.currentHp) * ROYAL_TEMPO_HEAL_RATIO,
+        );
+        const appliedHeal = Math.min(healAmount, nextState.player.maxHp - nextState.player.currentHp);
+
+        nextState.player.currentHp += appliedHeal;
+        timerBonusApplied += ROYAL_TEMPO_TIME_MS;
+
+        if (appliedHeal > 0) {
+          events.push({ type: 'player-heal', amount: appliedHeal });
+        }
+      }
+    }
 
     if (timerBonusApplied > 0) {
+      nextState.battleTimerMs += timerBonusApplied;
       events.push({ type: 'timer', amount: timerBonusApplied });
     }
 
@@ -311,29 +452,62 @@ export function trySwap(
     nextState.player.shield += shieldGain;
     events.push({ type: 'player-action', action: 'defend' });
     events.push({ type: 'player-shield', amount: shieldGain });
+
+    const softGuardHeal = getRunBoonStacks(nextState.runBoons, 'soft-guard') * SOFT_GUARD_HEAL;
+    const appliedHeal = Math.min(softGuardHeal, nextState.player.maxHp - nextState.player.currentHp);
+
+    if (appliedHeal > 0) {
+      nextState.player.currentHp += appliedHeal;
+      events.push({ type: 'player-heal', amount: appliedHeal });
+    }
+
+    if (timerBonusApplied > 0) {
+      nextState.battleTimerMs += timerBonusApplied;
+      events.push({ type: 'timer', amount: timerBonusApplied });
+    }
+
     nextState.lastMessage = `Defend gained ${shieldGain} shield.`;
   } else {
-    const requestedHeal = Math.ceil(turnSummary.turnPower * 0.75) + nextState.player.healBonus;
+    const requestedHeal =
+      Math.ceil(turnSummary.turnPower * 0.75) +
+      nextState.player.healBonus +
+      nextState.battleFlags.healPowerBonus;
     const healAmount = Math.max(0, Math.min(requestedHeal, nextState.player.maxHp - nextState.player.currentHp));
     nextState.player.currentHp += healAmount;
     events.push({ type: 'player-action', action: 'heal' });
     events.push({ type: 'player-heal', amount: healAmount });
+
+    const afterglowShield = getRunBoonStacks(nextState.runBoons, 'afterglow') * AFTERGLOW_SHIELD;
+
+    if (afterglowShield > 0) {
+      nextState.player.shield += afterglowShield;
+      events.push({ type: 'player-shield', amount: afterglowShield });
+    }
+
+    if (timerBonusApplied > 0) {
+      nextState.battleTimerMs += timerBonusApplied;
+      events.push({ type: 'timer', amount: timerBonusApplied });
+    }
+
     nextState.lastMessage = healAmount > 0 ? `Heal restored ${healAmount} HP.` : 'Heal found no missing HP.';
   }
 
   if (battleAdvanced) {
+    const clearedBattleIndex = nextState.battleIndex;
+    const nextProgress = getNextBattleProgress(clearedBattleIndex, nextState.loopCount);
     events.push({
       type: 'battle-cleared',
       bonus: clearBonusAwarded,
-      battleIndex: nextState.battleIndex,
-      nextBattleIndex: nextState.battleIndex === 30 ? 1 : nextState.battleIndex + 1,
-      nextLoopCount: nextState.battleIndex === 30 ? nextState.loopCount + 1 : nextState.loopCount,
+      battleIndex: clearedBattleIndex,
+      nextBattleIndex: nextProgress.battleIndex,
+      nextLoopCount: nextProgress.loopCount,
     });
-    const advancedState = advanceToNextBattle(nextState);
+
+    const transitionedState = transitionAfterBattleClear(nextState, clearedBattleIndex, rng, events);
 
     return {
       accepted: true,
-      state: advancedState,
+      state: transitionedState,
       boardResult,
       events,
       battleAdvanced: true,
@@ -378,12 +552,19 @@ function createBattleState(options: {
   player: PlayerRuntimeState;
   score: number;
   highScore: number;
+  runBoons: RunBoonState;
   battleTimerMs?: number;
   battleTimerMaxMs?: number;
 }): CampaignRunState {
   const enemies = createEncounterEnemies(options.battleIndex, options.loopCount);
   const battleTimerMaxMs = options.battleTimerMaxMs ?? getBattleTimerMs(options.battleIndex);
   const selectedTargetId = getWeakestLivingEnemyId(enemies);
+  const battleFlags = createBattleFlags(options.battleIndex, options.runBoons);
+  const player = {
+    ...options.player,
+    currentHp: Math.min(options.player.maxHp, options.player.currentHp),
+    shield: getBattleStartShield(options.battleIndex, options.runBoons),
+  };
 
   return {
     phase: 'battle',
@@ -392,7 +573,7 @@ function createBattleState(options: {
     battleTimerMs: options.battleTimerMs ?? battleTimerMaxMs,
     battleTimerMaxMs,
     board: options.board,
-    player: options.player,
+    player,
     enemies,
     selectedAction: 'attack',
     selectedTargetId,
@@ -400,6 +581,10 @@ function createBattleState(options: {
     highScore: Math.max(options.highScore, options.score),
     lastMessage: buildBattleIntroMessage(options.battleIndex, options.loopCount, enemies),
     runEndedReason: null,
+    runBoons: { ...options.runBoons },
+    checkpointOptions: null,
+    boonDraft: null,
+    battleFlags,
   };
 }
 
@@ -436,23 +621,34 @@ function createEncounterEnemies(battleIndex: number, loopCount: number): EnemyRu
   });
 }
 
-function summarizeBoardTurn(boardResult: BoardResolutionResult): {
+function summarizeBoardTurn(
+  boardResult: BoardResolutionResult,
+  runBoons: RunBoonState,
+): {
   totalTilesCleared: number;
   comboSteps: number;
   bigMatchSteps: number;
   hasBigMatch: boolean;
   turnPower: number;
+  luckySwingBonusMs: number;
 } {
   const totalTilesCleared = boardResult.steps.reduce((sum, step) => sum + step.clearedCells.length, 0);
   const comboSteps = boardResult.steps.length;
   const bigMatchSteps = boardResult.steps.filter((step) => step.bigMatch).length;
+  const extraCascadeSteps = Math.max(0, comboSteps - 1);
+  const bigFeelingsBonus = bigMatchSteps * getRunBoonStacks(runBoons, 'big-feelings') * BIG_FEELINGS_POWER;
+  const cascadeKissBonus = extraCascadeSteps * getRunBoonStacks(runBoons, 'cascade-kiss') * CASCADE_KISS_POWER;
+  const luckySwingBonusMs =
+    totalTilesCleared >= 8 ? getRunBoonStacks(runBoons, 'lucky-swing') * LUCKY_SWING_MS : 0;
 
   return {
     totalTilesCleared,
     comboSteps,
     bigMatchSteps,
     hasBigMatch: bigMatchSteps > 0,
-    turnPower: totalTilesCleared + Math.max(0, comboSteps - 1) + 2 * bigMatchSteps,
+    turnPower:
+      totalTilesCleared + extraCascadeSteps + 2 * bigMatchSteps + bigFeelingsBonus + cascadeKissBonus,
+    luckySwingBonusMs,
   };
 }
 
@@ -567,27 +763,153 @@ function applyDamageToPlayer(
   };
 }
 
-function advanceToNextBattle(currentState: CampaignRunState): CampaignRunState {
-  const nextBattleIndex = currentState.battleIndex === 30 ? 1 : currentState.battleIndex + 1;
-  const nextLoopCount = currentState.battleIndex === 30 ? currentState.loopCount + 1 : currentState.loopCount;
-  const carriedBattleTimerMs = currentState.battleTimerMs;
-  const nextBattleTimerMs = getBattleTimerMs(nextBattleIndex) + carriedBattleTimerMs;
+function transitionAfterBattleClear(
+  currentState: CampaignRunState,
+  clearedBattleIndex: number,
+  rng: () => number,
+  events: CampaignEvent[],
+): CampaignRunState {
+  if (isBossCheckpointBattle(clearedBattleIndex)) {
+    const bossCheckpointState = createCheckpointState(currentState, clearedBattleIndex, 'boss');
+    events.push({
+      type: 'checkpoint-ready',
+      checkpoint: 'boss',
+      nextBattleIndex: bossCheckpointState.battleIndex,
+      nextLoopCount: bossCheckpointState.loopCount,
+    });
+
+    const draftedState = buildDraftState(
+      bossCheckpointState,
+      'major',
+      rng,
+      `Major boon draft before Battle ${bossCheckpointState.battleIndex}.`,
+    );
+
+    if (draftedState.boonDraft) {
+      events.push({
+        type: 'boon-draft-ready',
+        tier: draftedState.boonDraft.tier,
+        options: [...draftedState.boonDraft.options],
+      });
+    }
+
+    return draftedState;
+  }
+
+  if (isRegularCheckpointBattle(clearedBattleIndex)) {
+    const regularCheckpointState = createCheckpointState(currentState, clearedBattleIndex, 'regular');
+    events.push({
+      type: 'checkpoint-ready',
+      checkpoint: 'regular',
+      nextBattleIndex: regularCheckpointState.battleIndex,
+      nextLoopCount: regularCheckpointState.loopCount,
+    });
+    return regularCheckpointState;
+  }
+
+  return advanceToNextBattle(currentState);
+}
+
+function createCheckpointState(
+  currentState: CampaignRunState,
+  clearedBattleIndex: number,
+  checkpointType: 'regular' | 'boss',
+): CampaignRunState {
+  const nextProgress = getNextBattleProgress(clearedBattleIndex, currentState.loopCount);
+  const nextBattleTimerMs = getBattleTimerMs(nextProgress.battleIndex) + currentState.battleTimerMs;
 
   return {
-    ...createBattleState({
-      battleIndex: nextBattleIndex,
-      board: currentState.board,
-      highScore: currentState.highScore,
-      loopCount: nextLoopCount,
-      player: {
-        ...currentState.player,
-        shield: 0,
-      },
-      score: currentState.score,
-      battleTimerMs: nextBattleTimerMs,
-      battleTimerMaxMs: nextBattleTimerMs,
-    }),
+    ...currentState,
+    phase: checkpointType === 'regular' ? 'checkpoint' : 'boon-draft',
+    battleIndex: nextProgress.battleIndex,
+    loopCount: nextProgress.loopCount,
+    battleTimerMs: nextBattleTimerMs,
+    battleTimerMaxMs: nextBattleTimerMs,
+    player: {
+      ...currentState.player,
+      shield: 0,
+    },
+    enemies: [],
+    selectedAction: 'attack',
+    selectedTargetId: null,
+    checkpointOptions: checkpointType === 'regular' ? [...REGULAR_CHECKPOINT_OPTIONS] : null,
+    boonDraft: null,
+    battleFlags: createEmptyBattleFlags(),
+    lastMessage:
+      checkpointType === 'regular'
+        ? `Checkpoint before Battle ${nextProgress.battleIndex}.`
+        : `Major boon draft before Battle ${nextProgress.battleIndex}.`,
   };
+}
+
+function buildDraftState(
+  currentState: CampaignRunState,
+  requestedTier: RunBoonTier,
+  rng: () => number,
+  message: string,
+): CampaignRunState {
+  const requestedEligible = getEligibleBoonIds(currentState.runBoons, requestedTier);
+  const effectiveTier =
+    requestedEligible.length > 0 ? requestedTier : requestedTier === 'major' ? 'minor' : requestedTier;
+  const eligible = getEligibleBoonIds(currentState.runBoons, effectiveTier);
+
+  if (eligible.length === 0) {
+    return resumePendingBattle({
+      ...currentState,
+      phase: requestedTier === 'major' ? 'boon-draft' : 'checkpoint',
+      checkpointOptions: null,
+      boonDraft: null,
+      lastMessage: 'All run boons are maxed for this run.',
+    });
+  }
+
+  return {
+    ...currentState,
+    phase: 'boon-draft',
+    checkpointOptions: null,
+    boonDraft: {
+      tier: effectiveTier,
+      options: draftBoonOptions(eligible, rng),
+    },
+    lastMessage: message,
+  };
+}
+
+function resumePendingBattle(currentState: CampaignRunState): CampaignRunState {
+  return createBattleState({
+    battleIndex: currentState.battleIndex,
+    loopCount: currentState.loopCount,
+    board: currentState.board,
+    player: {
+      ...currentState.player,
+      shield: 0,
+    },
+    score: currentState.score,
+    highScore: currentState.highScore,
+    runBoons: currentState.runBoons,
+    battleTimerMs: currentState.battleTimerMs,
+    battleTimerMaxMs: currentState.battleTimerMaxMs,
+  });
+}
+
+function advanceToNextBattle(currentState: CampaignRunState): CampaignRunState {
+  const nextProgress = getNextBattleProgress(currentState.battleIndex, currentState.loopCount);
+  const nextBattleTimerMs = getBattleTimerMs(nextProgress.battleIndex) + currentState.battleTimerMs;
+
+  return createBattleState({
+    battleIndex: nextProgress.battleIndex,
+    board: currentState.board,
+    highScore: currentState.highScore,
+    loopCount: nextProgress.loopCount,
+    player: {
+      ...currentState.player,
+      shield: 0,
+    },
+    score: currentState.score,
+    runBoons: currentState.runBoons,
+    battleTimerMs: nextBattleTimerMs,
+    battleTimerMaxMs: nextBattleTimerMs,
+  });
 }
 
 function endRun(
@@ -600,6 +922,8 @@ function endRun(
     phase: 'ended',
     battleTimerMs: 0,
     runEndedReason: reason,
+    checkpointOptions: null,
+    boonDraft: null,
     lastMessage: message,
   };
 }
@@ -622,6 +946,15 @@ function cloneState(currentState: CampaignRunState): CampaignRunState {
     board: currentState.board,
     player: { ...currentState.player },
     enemies: currentState.enemies.map((enemy) => ({ ...enemy, intent: { ...enemy.intent } })),
+    runBoons: { ...currentState.runBoons },
+    checkpointOptions: currentState.checkpointOptions ? [...currentState.checkpointOptions] : null,
+    boonDraft: currentState.boonDraft
+      ? {
+          tier: currentState.boonDraft.tier,
+          options: [...currentState.boonDraft.options],
+        }
+      : null,
+    battleFlags: { ...currentState.battleFlags },
   };
 }
 
@@ -632,6 +965,46 @@ function createEmptyBonuses(): PlayerBonuses {
     guardBonus: 0,
     healBonus: 0,
   };
+}
+
+function createEmptyRunBoons(): RunBoonState {
+  return Object.fromEntries(
+    Object.keys(RUN_BOON_DEFINITIONS).map((boonId) => [boonId, 0]),
+  ) as RunBoonState;
+}
+
+function mergeRunBoons(runBoons: Partial<RunBoonState> | undefined): RunBoonState {
+  return {
+    ...createEmptyRunBoons(),
+    ...(runBoons ?? {}),
+  };
+}
+
+function createEmptyBattleFlags(): BattleFlags {
+  return {
+    firstAttackUsed: false,
+    healPowerBonus: 0,
+  };
+}
+
+function createBattleFlags(battleIndex: number, runBoons: RunBoonState): BattleFlags {
+  return {
+    firstAttackUsed: false,
+    healPowerBonus:
+      isBossBattle(battleIndex) && getRunBoonStacks(runBoons, 'unshaken') > 0
+        ? UNSHAKEN_BOSS_HEAL_POWER
+        : 0,
+  };
+}
+
+function getBattleStartShield(battleIndex: number, runBoons: RunBoonState): number {
+  let shield = getRunBoonStacks(runBoons, 'feather-bed') * FEATHER_BED_SHIELD;
+
+  if (isBossBattle(battleIndex) && getRunBoonStacks(runBoons, 'unshaken') > 0) {
+    shield += UNSHAKEN_BOSS_SHIELD;
+  }
+
+  return shield;
 }
 
 function buildBattleIntroMessage(
@@ -681,4 +1054,47 @@ function getWeakestLivingEnemyId(enemies: EnemyRuntimeState[]): string | null {
   return weakest?.id ?? null;
 }
 
-export { BOSS_BATTLE_TIMER_MS, NORMAL_BATTLE_TIMER_MS };
+function getRunBoonStacks(runBoons: RunBoonState, boonId: RunBoonId): number {
+  return runBoons[boonId] ?? 0;
+}
+
+function getEligibleBoonIds(runBoons: RunBoonState, tier: RunBoonTier): RunBoonId[] {
+  return (Object.values(RUN_BOON_DEFINITIONS) as (typeof RUN_BOON_DEFINITIONS)[RunBoonId][])
+    .filter((definition) => definition.tier === tier)
+    .filter((definition) => getRunBoonStacks(runBoons, definition.id) < definition.stackCap)
+    .map((definition) => definition.id);
+}
+
+function draftBoonOptions(eligibleBoons: RunBoonId[], rng: () => number): RunBoonId[] {
+  const pool = [...eligibleBoons];
+  const options: RunBoonId[] = [];
+  const targetCount = Math.min(3, pool.length);
+
+  while (pool.length > 0 && options.length < targetCount) {
+    const index = Math.floor(rng() * pool.length);
+    const nextOption = pool.splice(index, 1)[0];
+
+    if (nextOption) {
+      options.push(nextOption);
+    }
+  }
+
+  return options;
+}
+
+function getNextBattleProgress(
+  battleIndex: number,
+  loopCount: number,
+): { battleIndex: number; loopCount: number } {
+  return {
+    battleIndex: battleIndex === 30 ? 1 : battleIndex + 1,
+    loopCount: battleIndex === 30 ? loopCount + 1 : loopCount,
+  };
+}
+
+export {
+  BOSS_BATTLE_TIMER_MS,
+  NORMAL_BATTLE_TIMER_MS,
+  CHECKPOINT_BANK_TIME_MS,
+  CHECKPOINT_OPTION_DEFINITIONS,
+};

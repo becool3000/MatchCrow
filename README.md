@@ -11,13 +11,11 @@ npm run dev
 
 ## Firebase Leaderboard
 
-The client reads and submits leaderboard scores directly against Firestore.
+The client reads leaderboard scores from Firestore and submits high scores through the deployed Firebase HTTP function.
 
 1. Copy `.env.example` to `.env`
 2. Fill in the Firebase web app values from the Firebase console
-3. Deploy the backend with Firebase CLI
-
-Top-score writes are constrained by `firestore.rules`.
+3. Deploy Firestore rules and the Firebase functions backend with Firebase CLI
 
 ## Build
 

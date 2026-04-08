@@ -1,12 +1,13 @@
 import Phaser from 'phaser';
 import type { EnemyId } from '../../game/campaignData.ts';
 import { getEnemyTextureSpec } from '../../game/assets/manifest.ts';
+import { createHeartGraphic } from './heartFx.ts';
 
 export class EnemyActor {
   private readonly scene: Phaser.Scene;
   private readonly root: Phaser.GameObjects.Container;
   private readonly sprite: Phaser.GameObjects.Sprite;
-  private readonly flash: Phaser.GameObjects.Ellipse;
+  private readonly flash: Phaser.GameObjects.Graphics;
   private perch = new Phaser.Math.Vector2();
   private baseScale = 1;
   private idleTween?: Phaser.Tweens.Tween;
@@ -31,10 +32,17 @@ export class EnemyActor {
     this.attackTextureKey = attackTextureKey;
     this.root = scene.add.container(perch.x, perch.y).setDepth(46);
     this.sprite = scene.add.sprite(0, -2, textureKey).setOrigin(0.5);
-    this.flash = scene.add
-      .ellipse(0, -4, 52, 42, 0xffffff, 0.86)
-      .setOrigin(0.5)
+    this.flash = createHeartGraphic(scene, {
+      size: 52,
+      fillColor: '#fffdfb',
+      strokeColor: '#e6dcff',
+      fillAlpha: 0.94,
+      strokeAlpha: 0.96,
+      strokeWidth: 3,
+    })
+      .setPosition(0, -4)
       .setAlpha(0);
+    this.flash.setScale(0.78);
     this.root.add([this.sprite, this.flash]);
     this.startIdle();
   }
@@ -145,18 +153,33 @@ export class EnemyActor {
 
   async takeHit(): Promise<void> {
     this.stopIdle();
-    this.flash.setAlpha(0.85);
+    this.flash.setAlpha(0.94);
+    this.flash.setScale(0.78);
+    this.flash.setAngle(Phaser.Math.FloatBetween(-8, 8));
 
-    await tweenPromise(this.scene, {
-      targets: this.root,
-      x: this.perch.x + 14 * this.baseScale,
-      angle: 10,
-      duration: 120,
-      yoyo: true,
-      ease: 'Sine.InOut',
-    });
+    await Promise.all([
+      tweenPromise(this.scene, {
+        targets: this.root,
+        x: this.perch.x + 14 * this.baseScale,
+        angle: 10,
+        duration: 120,
+        yoyo: true,
+        ease: 'Sine.InOut',
+      }),
+      tweenPromise(this.scene, {
+        targets: this.flash,
+        alpha: 0,
+        scaleX: 1.24,
+        scaleY: 1.24,
+        angle: this.flash.angle + Phaser.Math.FloatBetween(-10, 10),
+        duration: 138,
+        ease: 'Sine.Out',
+      }),
+    ]);
 
     this.flash.setAlpha(0);
+    this.flash.setScale(0.78);
+    this.flash.setAngle(0);
     this.startIdle();
   }
 
@@ -179,6 +202,8 @@ export class EnemyActor {
     this.root.setAlpha(1);
     this.root.setScale(this.baseScale);
     this.flash.setAlpha(0);
+    this.flash.setScale(0.78);
+    this.flash.setAngle(0);
     this.startIdle();
   }
 
@@ -194,6 +219,8 @@ export class EnemyActor {
     this.root.setAlpha(1);
     this.root.setScale(this.baseScale);
     this.flash.setAlpha(0);
+    this.flash.setScale(0.78);
+    this.flash.setAngle(0);
     this.startSpriteAnimation();
     const textureSpec = getEnemyTextureSpec(this.enemyId);
 

@@ -7,6 +7,8 @@ import { getProgressionState, getRunXpForScore, type MatchCrowProgressionState }
 import {
   advanceClock,
   initializeRun,
+  chooseCheckpointOption,
+  pickRunBoon,
   retireRun,
   setSelectedAction,
   skipBattle,
@@ -22,7 +24,12 @@ import {
   normalizeInitials,
   type SubmitEligibility,
 } from '../services/leaderboard.ts';
-import type { PlayerActionId, RunEndedReason } from './campaignData.ts';
+import type {
+  CheckpointOptionId,
+  PlayerActionId,
+  RunBoonId,
+  RunEndedReason,
+} from './campaignData.ts';
 
 type RestartListener = (state: CampaignRunState) => void;
 
@@ -36,6 +43,18 @@ const ATTACK_BONUS_STORAGE_KEY = 'matchcrow.attack-bonus';
 const GUARD_BONUS_STORAGE_KEY = 'matchcrow.guard-bonus';
 const HEAL_BONUS_STORAGE_KEY = 'matchcrow.heal-bonus';
 const PENDING_UPGRADES_STORAGE_KEY = 'matchcrow.pending-upgrades';
+const PLAYER_DATA_STORAGE_KEYS = [
+  HIGH_SCORE_STORAGE_KEY,
+  TOTAL_XP_STORAGE_KEY,
+  PLAYER_ID_STORAGE_KEY,
+  LAST_SUBMITTED_SCORE_STORAGE_KEY,
+  LAST_SUBMITTED_INITIALS_STORAGE_KEY,
+  MAX_HP_BONUS_STORAGE_KEY,
+  ATTACK_BONUS_STORAGE_KEY,
+  GUARD_BONUS_STORAGE_KEY,
+  HEAL_BONUS_STORAGE_KEY,
+  PENDING_UPGRADES_STORAGE_KEY,
+] as const;
 
 export interface MatchCrowLeaderboardState {
   playerId: string;
@@ -70,7 +89,7 @@ export class CrowsCacheGame {
   private readonly restartListeners = new Set<RestartListener>();
   private highScore = 0;
   private totalXp = 0;
-  private readonly playerId: string;
+  private playerId: string;
   private lastSubmittedScore: number;
   private lastSubmittedInitials: string;
   private bonuses: PlayerBonuses;
@@ -131,6 +150,15 @@ export class CrowsCacheGame {
   }
 
   advanceClock(elapsedMs: number): CampaignClockResult {
+    if (this.pendingUpgradeChoices > 0) {
+      return {
+        state: this.state,
+        changed: false,
+        displayedSecondChanged: false,
+        becameComplete: false,
+      };
+    }
+
     const previousPhase = this.state.phase;
     const result = advanceClock(this.state, elapsedMs);
 
@@ -156,6 +184,7 @@ export class CrowsCacheGame {
     if (result.accepted) {
       this.state = result.state;
       this.syncHighScore();
+      this.syncRunProgressToScore();
 
       if (previousPhase === 'battle' && this.state.phase === 'ended') {
         this.commitRunProgress();
@@ -190,6 +219,16 @@ export class CrowsCacheGame {
     return this.state;
   }
 
+  chooseCheckpointOption(optionId: CheckpointOptionId): CampaignRunState {
+    this.state = chooseCheckpointOption(this.state, optionId, this.rng);
+    return this.state;
+  }
+
+  pickRunBoon(boonId: RunBoonId): CampaignRunState {
+    this.state = pickRunBoon(this.state, boonId);
+    return this.state;
+  }
+
   restart(): CampaignRunState {
     this.state = initializeRun(this.rng, this.highScore, this.bonuses);
     this.runProgressCommitted = false;
@@ -197,6 +236,33 @@ export class CrowsCacheGame {
     this.lastRunLevelsGained = 0;
     this.restartListeners.forEach((listener) => listener(this.state));
     return this.state;
+  }
+
+  resetPlayerData(): MatchCrowViewState {
+    PLAYER_DATA_STORAGE_KEYS.forEach((storageKey) => {
+      removeStorageValue(storageKey);
+    });
+
+    this.highScore = 0;
+    this.totalXp = 0;
+    this.lastSubmittedScore = 0;
+    this.lastSubmittedInitials = '';
+    this.pendingUpgradeChoices = 0;
+    this.runProgressCommitted = false;
+    this.lastRunAwardedXp = 0;
+    this.lastRunLevelsGained = 0;
+    this.bonuses = {
+      maxHpBonus: 0,
+      attackBonus: 0,
+      guardBonus: 0,
+      healBonus: 0,
+    };
+    this.playerId = createPlayerId();
+    writeString(PLAYER_ID_STORAGE_KEY, this.playerId);
+    this.state = initializeRun(this.rng, this.highScore, this.bonuses);
+    this.restartListeners.forEach((listener) => listener(this.state));
+
+    return this.getViewState();
   }
 
   onRestart(listener: RestartListener): () => void {
@@ -233,6 +299,11 @@ export class CrowsCacheGame {
       this.state = {
         ...this.state,
         lastMessage: `Permanent upgrade stored. ${this.pendingUpgradeChoices} more to choose.`,
+      };
+    } else if (this.state.phase === 'battle') {
+      this.state = {
+        ...this.state,
+        lastMessage: 'Permanent upgrade stored. Battle timer resumed.',
       };
     } else if (this.state.phase === 'ended') {
       this.state = {
@@ -284,38 +355,60 @@ export class CrowsCacheGame {
     }
 
     this.runProgressCommitted = true;
-    this.lastRunAwardedXp = 0;
-    this.lastRunLevelsGained = 0;
+    this.syncRunProgressToScore();
 
+    if (this.pendingUpgradeChoices > 0) {
+      this.state = {
+        ...this.state,
+        lastMessage:
+          this.lastRunAwardedXp > 0
+            ? `Run over. +${this.lastRunAwardedXp} XP earned. Choose your permanent upgrade${this.pendingUpgradeChoices === 1 ? '' : 's'}.`
+            : `Run over. Choose your permanent upgrade${this.pendingUpgradeChoices === 1 ? '' : 's'}.`,
+      };
+      return;
+    }
+
+    if (this.lastRunAwardedXp <= 0) {
+      return;
+    }
+
+    this.state = {
+      ...this.state,
+      lastMessage: `Run over. +${this.lastRunAwardedXp} XP earned.`,
+    };
+  }
+
+  private syncRunProgressToScore(): void {
     const awardedXp = getRunXpForScore(this.state.score);
+    const xpDelta = awardedXp - this.lastRunAwardedXp;
 
-    if (awardedXp <= 0) {
+    if (xpDelta <= 0) {
       return;
     }
 
     const previousLevel = getProgressionState(this.totalXp).level;
 
     this.lastRunAwardedXp = awardedXp;
-    this.totalXp += awardedXp;
+    this.totalXp += xpDelta;
     writeNumber(TOTAL_XP_STORAGE_KEY, this.totalXp);
 
     const nextLevel = getProgressionState(this.totalXp).level;
-    this.lastRunLevelsGained = Math.max(0, nextLevel - previousLevel);
+    const levelsGained = Math.max(0, nextLevel - previousLevel);
 
-    if (this.lastRunLevelsGained > 0) {
-      this.pendingUpgradeChoices += this.lastRunLevelsGained;
-      writeNumber(PENDING_UPGRADES_STORAGE_KEY, this.pendingUpgradeChoices);
-      this.state = {
-        ...this.state,
-        lastMessage: `Run over. +${awardedXp} XP and ${this.lastRunLevelsGained} permanent upgrade picks.`,
-      };
+    if (levelsGained <= 0) {
       return;
     }
 
-    this.state = {
-      ...this.state,
-      lastMessage: `Run over. +${awardedXp} XP earned.`,
-    };
+    this.lastRunLevelsGained += levelsGained;
+    this.pendingUpgradeChoices += levelsGained;
+    writeNumber(PENDING_UPGRADES_STORAGE_KEY, this.pendingUpgradeChoices);
+
+    if (this.state.phase === 'battle') {
+      this.state = {
+        ...this.state,
+        lastMessage: `Level up. Choose ${this.pendingUpgradeChoices} permanent upgrade${this.pendingUpgradeChoices === 1 ? '' : 's'}.`,
+      };
+    }
   }
 }
 
@@ -370,6 +463,18 @@ function writeString(storageKey: string, value: string): void {
   }
 }
 
+function removeStorageValue(storageKey: string): void {
+  try {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.removeItem(storageKey);
+  } catch {
+    // Ignore storage failures in private browsing or test environments.
+  }
+}
+
 function readOrCreatePlayerId(): string {
   const existing = readString(PLAYER_ID_STORAGE_KEY);
 
@@ -377,10 +482,13 @@ function readOrCreatePlayerId(): string {
     return existing;
   }
 
-  const nextId =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `player-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const nextId = createPlayerId();
   writeString(PLAYER_ID_STORAGE_KEY, nextId);
   return nextId;
+}
+
+function createPlayerId(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `player-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }

@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { AUDIO_KEYS } from '../../game/assets/manifest.ts';
+import { BACKGROUND_MUSIC_PLAYLIST } from '../../game/assets/manifest.ts';
 
 const MUSIC_STORAGE_KEY = 'matchcrow.music-enabled';
 const CROWAXID_VOLUME = 0.3;
@@ -30,6 +30,14 @@ export function setCrowaxidMusicEnabled(scene: Phaser.Scene, enabled: boolean): 
   return musicEnabled;
 }
 
+export function canSkipCrowaxidMusic(): boolean {
+  return BACKGROUND_MUSIC_PLAYLIST.length > 1;
+}
+
+export function skipCrowaxidMusic(scene: Phaser.Scene): boolean {
+  return getOrCreateController(scene).skipToNextTrack();
+}
+
 export function onCrowaxidMusic(
   scene: Phaser.Scene,
   listener: CrowaxidMusicListener,
@@ -44,7 +52,7 @@ export function stopCrowaxidMusic(scene: Phaser.Scene): void {
 
 class CrowaxidMusicController {
   private readonly scene: Phaser.Scene;
-  private readonly soundKey: string;
+  private readonly playlist: readonly string[];
   private readonly volume: number;
   private readonly silenceMs: number;
   private activeSound?: Phaser.Sound.BaseSound;
@@ -55,15 +63,16 @@ class CrowaxidMusicController {
   private disposed = false;
   private beatIndex = 0;
   private enabled = musicEnabled;
+  private currentTrackIndex = 0;
 
   constructor(
     scene: Phaser.Scene,
-    soundKey: string,
+    playlist: readonly string[],
     volume = CROWAXID_VOLUME,
     silenceMs = CROWAXID_SILENCE_MS,
   ) {
     this.scene = scene;
-    this.soundKey = soundKey;
+    this.playlist = playlist;
     this.volume = volume;
     this.silenceMs = silenceMs;
     this.scene.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.dispose());
@@ -106,6 +115,25 @@ class CrowaxidMusicController {
     }
   }
 
+  skipToNextTrack(): boolean {
+    if (this.disposed || this.playlist.length < 2) {
+      return false;
+    }
+
+    this.started = true;
+    this.advanceTrack();
+    this.silenceTimer?.remove(false);
+    this.silenceTimer = undefined;
+
+    if (!this.enabled) {
+      return true;
+    }
+
+    this.stopPlayback();
+    this.playTrack();
+    return true;
+  }
+
   dispose(): void {
     if (this.disposed) {
       return;
@@ -121,7 +149,7 @@ class CrowaxidMusicController {
   }
 
   private playTrack(): void {
-    if (this.disposed || !this.enabled || this.activeSound) {
+    if (this.disposed || !this.enabled || this.activeSound || this.playlist.length === 0) {
       return;
     }
 
@@ -130,7 +158,7 @@ class CrowaxidMusicController {
       return;
     }
 
-    const sound = this.scene.sound.add(this.soundKey, {
+    const sound = this.scene.sound.add(this.playlist[this.currentTrackIndex], {
       loop: false,
       volume: this.volume,
     });
@@ -151,6 +179,7 @@ class CrowaxidMusicController {
   }
 
   private handleComplete(): void {
+    this.advanceTrack();
     this.stopPlayback();
 
     if (this.disposed || !this.enabled) {
@@ -162,6 +191,14 @@ class CrowaxidMusicController {
       this.silenceTimer = undefined;
       this.playTrack();
     });
+  }
+
+  private advanceTrack(): void {
+    if (this.playlist.length === 0) {
+      return;
+    }
+
+    this.currentTrackIndex = (this.currentTrackIndex + 1) % this.playlist.length;
   }
 
   private startBeatTimer(): void {
@@ -217,7 +254,7 @@ function getOrCreateController(scene: Phaser.Scene): CrowaxidMusicController {
   let controller = controllerByScene.get(scene);
 
   if (!controller) {
-    controller = new CrowaxidMusicController(scene, AUDIO_KEYS.crowaxidBgm);
+    controller = new CrowaxidMusicController(scene, BACKGROUND_MUSIC_PLAYLIST);
     controllerByScene.set(scene, controller);
   }
 

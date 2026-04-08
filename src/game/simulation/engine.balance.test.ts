@@ -3,12 +3,15 @@ import { trySwapOnBoard } from './board.ts';
 import {
   advanceClock,
   initializeRun,
+  chooseCheckpointOption,
+  pickRunBoon,
   setSelectedAction,
   trySwap,
   type CampaignResolution,
   type CampaignRunState,
   type PlayerBonuses,
 } from './engine.ts';
+import type { CheckpointOptionId, RunBoonId } from '../campaignData.ts';
 import type { BoardResolutionResult, Cell } from './types.ts';
 
 interface MoveCandidate {
@@ -23,6 +26,10 @@ interface MoveCandidate {
 interface SimulatedRunResult {
   highestBattleReached: number;
   finalState: CampaignRunState;
+}
+
+interface AutoplayOptions {
+  checkpointStyle?: 'boons' | 'resources';
 }
 
 const AUTOPLAY_SEEDS = Array.from({ length: 20 }, (_, index) => index + 1);
@@ -56,37 +63,38 @@ describe('MatchCrow balance milestones', () => {
     expect(level15Mixed).toBeGreaterThanOrEqual(14);
   }, 30_000);
 
-  it('keeps earlier builds from overreaching too consistently', () => {
-    const level1Base = countRunsReachingBattle(10, {
-      maxHpBonus: 0,
-      attackBonus: 0,
-      guardBonus: 0,
-      healBonus: 0,
-    });
-    const level5Mixed = countRunsReachingBattle(20, {
+  it('makes boon-first checkpoint routing materially stronger than pure recovery routing', () => {
+    const level5MixedWithBoons = countRunsReachingBattle(20, {
       maxHpBonus: 8,
       attackBonus: 3,
       guardBonus: 3,
       healBonus: 3,
     });
-    const level10Mixed = countRunsReachingBattle(30, {
-      maxHpBonus: 24,
-      attackBonus: 6,
-      guardBonus: 6,
-      healBonus: 6,
-    });
+    const level5MixedResourcesOnly = countRunsReachingBattle(
+      20,
+      {
+        maxHpBonus: 8,
+        attackBonus: 3,
+        guardBonus: 3,
+        healBonus: 3,
+      },
+      { checkpointStyle: 'resources' },
+    );
 
-    expect(level1Base).toBeLessThanOrEqual(8);
-    expect(level5Mixed).toBeLessThanOrEqual(8);
-    expect(level10Mixed).toBeLessThanOrEqual(8);
+    expect(level5MixedWithBoons).toBeGreaterThan(level5MixedResourcesOnly);
+    expect(level5MixedWithBoons - level5MixedResourcesOnly).toBeGreaterThanOrEqual(3);
   }, 30_000);
 });
 
-function countRunsReachingBattle(targetBattle: number, bonuses: PlayerBonuses): number {
+function countRunsReachingBattle(
+  targetBattle: number,
+  bonuses: PlayerBonuses,
+  options?: AutoplayOptions,
+): number {
   let successes = 0;
 
   for (const seed of AUTOPLAY_SEEDS) {
-    const result = simulateAutoplayRun(seed, bonuses, targetBattle);
+    const result = simulateAutoplayRun(seed, bonuses, targetBattle, options);
 
     if (result.highestBattleReached >= targetBattle) {
       successes += 1;
@@ -96,13 +104,34 @@ function countRunsReachingBattle(targetBattle: number, bonuses: PlayerBonuses): 
   return successes;
 }
 
-function simulateAutoplayRun(seed: number, bonuses: PlayerBonuses, targetBattle: number): SimulatedRunResult {
+function simulateAutoplayRun(
+  seed: number,
+  bonuses: PlayerBonuses,
+  targetBattle: number,
+  options?: AutoplayOptions,
+): SimulatedRunResult {
   let state = initializeRun(createSeededRng(seed), 0, bonuses);
   let highestBattleReached = getBattleProgressValue(state);
 
-  for (let turnIndex = 0; turnIndex < MAX_AUTOPLAY_TURNS && state.phase === 'battle'; turnIndex += 1) {
+  for (let turnIndex = 0; turnIndex < MAX_AUTOPLAY_TURNS && state.phase !== 'ended'; turnIndex += 1) {
     if (highestBattleReached >= targetBattle) {
       break;
+    }
+
+    if (state.phase === 'checkpoint') {
+      state = chooseCheckpointOption(
+        state,
+        chooseCheckpointOptionForAutoplay(state, options),
+        createSeededRng(deriveDecisionSeed(seed, turnIndex, state.battleIndex)),
+      );
+      highestBattleReached = Math.max(highestBattleReached, getBattleProgressValue(state));
+      continue;
+    }
+
+    if (state.phase === 'boon-draft' && state.boonDraft) {
+      state = pickRunBoon(state, chooseRunBoonForAutoplay(state));
+      highestBattleReached = Math.max(highestBattleReached, getBattleProgressValue(state));
+      continue;
     }
 
     const action = chooseAutoplayAction(state);
@@ -122,7 +151,7 @@ function simulateAutoplayRun(seed: number, bonuses: PlayerBonuses, targetBattle:
     highestBattleReached = Math.max(highestBattleReached, getBattleProgressValue(state));
 
     if (state.phase !== 'battle') {
-      break;
+      continue;
     }
 
     const elapsedMs = estimateTurnElapsedMs(resolution);
@@ -262,6 +291,55 @@ function getIncomingAttackTotal(state: CampaignRunState): number {
   }, 0);
 }
 
+function chooseCheckpointOptionForAutoplay(
+  state: CampaignRunState,
+  options?: AutoplayOptions,
+): CheckpointOptionId {
+  if (options?.checkpointStyle === 'resources') {
+    if (state.player.currentHp < state.player.maxHp) {
+      return 'recover';
+    }
+
+    return 'bank-time';
+  }
+
+  const hpRatio = state.player.currentHp / Math.max(1, state.player.maxHp);
+
+  if (hpRatio <= 0.55) {
+    return 'recover';
+  }
+
+  if (state.battleTimerMs <= 12_000) {
+    return 'bank-time';
+  }
+
+  return 'boon-draft';
+}
+
+function chooseRunBoonForAutoplay(state: CampaignRunState): RunBoonId {
+  const hpRatio = state.player.currentHp / Math.max(1, state.player.maxHp);
+  const isMajor = state.boonDraft?.tier === 'major';
+  const options = state.boonDraft?.options ?? [];
+
+  const priority = isMajor
+    ? hpRatio <= 0.55
+      ? (['unshaken', 'overwhelming-heart', 'royal-tempo'] as const)
+      : (['overwhelming-heart', 'royal-tempo', 'unshaken'] as const)
+    : state.battleTimerMs <= 12_000
+      ? (['time-siphon', 'lucky-swing', 'big-feelings', 'first-crush', 'feather-bed', 'afterglow', 'soft-guard', 'cascade-kiss'] as const)
+      : hpRatio <= 0.55
+        ? (['feather-bed', 'afterglow', 'soft-guard', 'big-feelings', 'first-crush', 'time-siphon', 'lucky-swing', 'cascade-kiss'] as const)
+        : (['big-feelings', 'first-crush', 'cascade-kiss', 'time-siphon', 'lucky-swing', 'feather-bed', 'afterglow', 'soft-guard'] as const);
+
+  const fallback = options[0];
+
+  if (!fallback) {
+    throw new Error('Autoplay boon draft had no options.');
+  }
+
+  return priority.find((boonId) => options.includes(boonId)) ?? fallback;
+}
+
 function estimateTurnElapsedMs(resolution: CampaignResolution): number {
   const boardStepMs =
     resolution.boardResult?.steps.reduce((sum) => sum + 400, 0) ?? 0;
@@ -315,6 +393,14 @@ function deriveMoveSeed(
   value = Math.imul(value ^ 0x9e3779b9, 1664525) >>> 0;
   value = Math.imul(value ^ turnIndex, 1013904223) >>> 0;
   value = Math.imul(value ^ (fromRow << 12) ^ (fromCol << 8) ^ (toRow << 4) ^ toCol, 2246822519) >>> 0;
+  return value >>> 0;
+}
+
+function deriveDecisionSeed(runSeed: number, turnIndex: number, battleIndex: number): number {
+  let value = runSeed >>> 0;
+  value = Math.imul(value ^ 0x85ebca6b, 1664525) >>> 0;
+  value = Math.imul(value ^ turnIndex, 1013904223) >>> 0;
+  value = Math.imul(value ^ battleIndex, 2246822519) >>> 0;
   return value >>> 0;
 }
 

@@ -193,7 +193,13 @@ export const BACKGROUND_TEXTURE_KEYS = {
 
 export const AUDIO_KEYS = {
   crowaxidBgm: 'bgm-crowaxid',
-};
+  playlistBgm20260405: 'bgm-playlist-20260405',
+} as const;
+
+export const BACKGROUND_MUSIC_PLAYLIST = [
+  AUDIO_KEYS.playlistBgm20260405,
+  AUDIO_KEYS.crowaxidBgm,
+] as const;
 
 export const ENEMY_TEXTURE_KEYS = Object.keys(ENEMY_DEFINITIONS) as EnemyId[];
 
@@ -226,6 +232,7 @@ export const TEXTURE_FILE_PATHS: Record<string, string> = {
 
 export const AUDIO_FILE_PATHS: Record<string, string> = {
   [AUDIO_KEYS.crowaxidBgm]: audioPath('Crowaxid.wav'),
+  [AUDIO_KEYS.playlistBgm20260405]: audioPath('audio-20260405-0329-08.4670849.m4a'),
 };
 
 export const ALL_TEXTURE_KEYS = Object.keys(TEXTURE_FILE_PATHS);

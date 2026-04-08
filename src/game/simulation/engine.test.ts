@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { BOSS_BATTLE_TIMER_MS, NORMAL_BATTLE_TIMER_MS } from '../campaignData.ts';
+import type { CheckpointOptionId, RunBoonId } from '../campaignData.ts';
 import {
   advanceClock,
+  chooseCheckpointOption,
   createStateFromKinds,
+  pickRunBoon,
   setSelectedAction,
   skipBattle,
   trySwap,
@@ -114,6 +117,106 @@ describe('MatchCrow campaign engine', () => {
     expect(result.battleAdvanced).toBe(true);
     expect(result.boardResult?.board).toBeTruthy();
     expect(result.state.board).toBe(result.boardResult?.board);
+  });
+
+  it('enters a checkpoint after the configured regular battles', () => {
+    const state = createStateFromKinds(buildSingleMatchBoard('coin', 'key'), { battleIndex: 3 });
+    const mutable = state as CampaignRunState;
+    mutable.enemies[0] = { ...mutable.enemies[0], currentHp: 0, maxHp: 14 };
+    mutable.enemies[1] = { ...mutable.enemies[1], currentHp: 1, maxHp: 14 };
+    const result = trySwap(mutable, { row: 2, col: 0 }, { row: 2, col: 1 }, createSeededRng(14));
+
+    expect(result.accepted).toBe(true);
+    expect(result.state.phase).toBe('checkpoint');
+    expect(result.state.battleIndex).toBe(4);
+    expect(result.state.checkpointOptions).toEqual(['boon-draft', 'recover', 'bank-time']);
+    expect(result.events.some((event) => event.type === 'checkpoint-ready')).toBe(true);
+  });
+
+  it('enters a major boon draft after boss clears and pauses the timer outside battle', () => {
+    const state = createStateFromKinds(buildSingleMatchBoard('coin', 'key'), { battleIndex: 10 });
+    const mutable = state as CampaignRunState;
+    mutable.enemies[0] = { ...mutable.enemies[0], currentHp: 1, maxHp: 72 };
+    const result = trySwap(mutable, { row: 2, col: 0 }, { row: 2, col: 1 }, createSeededRng(15));
+    const paused = advanceClock(result.state, 5_000);
+
+    expect(result.accepted).toBe(true);
+    expect(result.state.phase).toBe('boon-draft');
+    expect(result.state.boonDraft?.tier).toBe('major');
+    expect(result.state.boonDraft?.options.length).toBeGreaterThan(0);
+    expect(paused.changed).toBe(false);
+    expect(paused.state.battleTimerMs).toBe(result.state.battleTimerMs);
+  });
+
+  it('applies checkpoint recover and bank time before resuming battle', () => {
+    const checkpointState = {
+      ...createStateFromKinds(buildSingleMatchBoard('coin', 'key'), {
+        battleIndex: 4,
+        currentHp: 20,
+        battleTimerMs: 12_000,
+        battleTimerMaxMs: 12_000,
+      }),
+      phase: 'checkpoint' as const,
+      enemies: [],
+      checkpointOptions: ['boon-draft', 'recover', 'bank-time'] satisfies CheckpointOptionId[],
+      selectedTargetId: null,
+    };
+
+    const recovered = chooseCheckpointOption(checkpointState, 'recover', createSeededRng(16));
+    const banked = chooseCheckpointOption(checkpointState, 'bank-time', createSeededRng(17));
+
+    expect(recovered.phase).toBe('battle');
+    expect(recovered.player.currentHp).toBe(26);
+    expect(banked.phase).toBe('battle');
+    expect(banked.battleTimerMs).toBe(20_000);
+  });
+
+  it('stores picked run boons and applies their battle hooks', () => {
+    const draftState = {
+      ...createStateFromKinds(buildSingleMatchBoard('coin', 'key'), {
+        battleIndex: 5,
+      }),
+      phase: 'boon-draft' as const,
+      enemies: [],
+      boonDraft: {
+        tier: 'minor' as const,
+        options: ['first-crush', 'feather-bed', 'afterglow'] satisfies RunBoonId[],
+      },
+      checkpointOptions: null,
+      selectedTargetId: null,
+    };
+
+    const picked = pickRunBoon(draftState, 'first-crush');
+    const baseline = createStateFromKinds(buildSingleMatchBoard('coin', 'key'), { battleIndex: 5 });
+    const boosted = trySwap(picked, { row: 2, col: 0 }, { row: 2, col: 1 }, createSeededRng(18));
+    const normal = trySwap(baseline, { row: 2, col: 0 }, { row: 2, col: 1 }, createSeededRng(18));
+    const boostedDamage = boosted.events.find((event) => event.type === 'enemy-damaged');
+    const normalDamage = normal.events.find((event) => event.type === 'enemy-damaged');
+
+    expect(picked.runBoons['first-crush']).toBe(1);
+    expect(picked.phase).toBe('battle');
+    expect(boostedDamage?.type).toBe('enemy-damaged');
+    expect(normalDamage?.type).toBe('enemy-damaged');
+    if (boostedDamage?.type !== 'enemy-damaged' || normalDamage?.type !== 'enemy-damaged') {
+      throw new Error('Expected damage events to exist.');
+    }
+    expect(boostedDamage.amount + boostedDamage.blocked).toBe(normalDamage.amount + normalDamage.blocked + 4);
+  });
+
+  it('applies boss-entry and boss-kill major boon hooks', () => {
+    const bossState = createStateFromKinds(buildSingleMatchBoard('coin', 'key'), {
+      battleIndex: 10,
+      currentHp: 20,
+      runBoons: { unshaken: 1, 'royal-tempo': 1 },
+    });
+    const mutable = bossState as CampaignRunState;
+    mutable.enemies[0] = { ...mutable.enemies[0], currentHp: 1, maxHp: 72 };
+    const result = trySwap(mutable, { row: 2, col: 0 }, { row: 2, col: 1 }, createSeededRng(19));
+
+    expect(bossState.player.shield).toBe(12);
+    expect(bossState.battleFlags.healPowerBonus).toBe(6);
+    expect(result.events.some((event) => event.type === 'player-heal' && event.amount > 0)).toBe(true);
+    expect(result.timerBonusApplied).toBeGreaterThanOrEqual(8_000);
   });
 
   it('can skip to the next battle without changing score or rerolling the board', () => {

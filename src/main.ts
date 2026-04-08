@@ -8,7 +8,9 @@ import {
   setSoundEffectsEnabled,
 } from './phaser/view/MatchCrowSfx.ts';
 import {
+  canSkipCrowaxidMusic,
   isCrowaxidMusicEnabled,
+  skipCrowaxidMusic,
   setCrowaxidMusicEnabled,
 } from './phaser/view/MatchCrowMusic.ts';
 import {
@@ -36,6 +38,7 @@ const hud = createHud(app, controller.getViewState(), {
   devToolsEnabled,
   soundEnabled: areSoundEffectsEnabled(),
   musicEnabled: isCrowaxidMusicEnabled(),
+  musicSkippable: canSkipCrowaxidMusic(),
 });
 const gameScene = new GameScene(controller, hud);
 const ensureBackgroundMusic = (): void => {
@@ -87,6 +90,17 @@ hud.onToggleMusic(() => {
   }
 });
 
+hud.onSkipMusic(() => {
+  skipCrowaxidMusic(gameScene);
+});
+
+hud.onResetPlayerData(() => {
+  ensureBackgroundMusic();
+  controller.resetPlayerData();
+  hud.render(controller.getViewState());
+  gameScene.refreshState();
+});
+
 hud.onRetire(() => {
   ensureBackgroundMusic();
   controller.retire();
@@ -105,6 +119,20 @@ hud.onChooseUpgrade((upgradeId) => {
   ensureBackgroundMusic();
   controller.applyPermanentUpgrade(upgradeId);
   hud.render(controller.getViewState());
+});
+
+hud.onChooseCheckpoint((optionId) => {
+  ensureBackgroundMusic();
+  controller.chooseCheckpointOption(optionId);
+  hud.render(controller.getViewState());
+  gameScene.refreshState();
+});
+
+hud.onPickRunBoon((boonId) => {
+  ensureBackgroundMusic();
+  controller.pickRunBoon(boonId);
+  hud.render(controller.getViewState());
+  gameScene.refreshState();
 });
 
 hud.onOpenLeaderboard(() => {

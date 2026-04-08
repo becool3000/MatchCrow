@@ -35,6 +35,11 @@ import {
   playCombatImpactCue,
   playSupportCue,
 } from '../view/MatchCrowSfx.ts';
+import {
+  createHeartGraphic,
+  pickHeartAccentColor,
+  pickHeartTextVariant,
+} from '../view/heartFx.ts';
 
 interface ArenaLayout {
   boardX: number;
@@ -55,14 +60,32 @@ interface DragState {
 interface ActiveMusicNote {
   container: Phaser.GameObjects.Container;
   pulseGraphic: Phaser.GameObjects.Graphics;
+  accentHeart?: Phaser.GameObjects.Graphics;
+  morphHeart?: Phaser.GameObjects.Graphics;
   baseScale: number;
   pulseTween?: Phaser.Tweens.Tween;
   riseTween?: Phaser.Tweens.Tween;
   swayTween?: Phaser.Tweens.Tween;
+  morphTween?: Phaser.Tweens.Tween;
+}
+
+type FloatingTextKind =
+  | 'score'
+  | 'bonus'
+  | 'shield'
+  | 'heal'
+  | 'enemy-damage'
+  | 'player-damage'
+  | 'enemy-support'
+  | 'generic';
+
+interface FloatingTextOptions {
+  kind?: FloatingTextKind;
+  heartGlimpseChance?: number;
 }
 
 const MUSIC_NOTE_COLORS = ['#ffcf6b', '#ff87c9', '#7dd8ff', '#94f7a9', '#c1a2ff'];
-const LOVE_HEART_COLORS = ['#ff7aa8', '#ff98c5', '#ffb3d7', '#ff5f8e'];
+const ENEMY_DAMAGE_TEXT_COLOR = '#ffc8dc';
 
 function createEnemyTextureKeyMap(): Record<string, string> {
   return Object.fromEntries(ENEMY_TEXTURE_KEYS.map((enemyId) => [enemyId, enemyId]));
@@ -227,8 +250,9 @@ export class GameScene extends Phaser.Scene {
     this.activeMusicNotes.forEach((note) => {
       note.pulseTween?.remove();
       note.pulseGraphic.setScale(note.baseScale);
+      note.accentHeart?.setScale(note.baseScale);
       note.pulseTween = this.tweens.add({
-        targets: note.pulseGraphic,
+        targets: [note.pulseGraphic, note.accentHeart].filter(Boolean),
         scaleX: note.baseScale * 1.28,
         scaleY: note.baseScale * 1.28,
         duration: Math.round(CROWAXID_BEAT_INTERVAL_MS * 0.34),
@@ -236,6 +260,15 @@ export class GameScene extends Phaser.Scene {
         ease: 'Sine.Out',
       });
     });
+
+    const morphCandidates = Array.from(this.activeMusicNotes).filter(
+      (note) => !note.morphTween && note.container.active,
+    );
+
+    if (morphCandidates.length > 0) {
+      const selectedNote = Phaser.Utils.Array.GetRandom(morphCandidates);
+      this.playMusicNoteHeartMorph(selectedNote);
+    }
 
     if (this.activeMusicNotes.size < 9) {
       this.spawnMusicNote();
@@ -344,7 +377,7 @@ export class GameScene extends Phaser.Scene {
   private async playBoardResolution(result: BoardResolutionResult): Promise<void> {
     for (const step of result.steps) {
       const point = getCentroid(step.clearedCells.map((cell) => this.cellToPoint(cell)));
-      this.spawnFloatingText(`+${step.scoreDelta}`, point, '#ffe68a');
+      this.spawnFloatingText(`+${step.scoreDelta}`, point, '#ffe68a', { kind: 'score' });
       if (step.bigMatch) {
         void playBigMatchCue(this);
       }
@@ -394,9 +427,10 @@ export class GameScene extends Phaser.Scene {
           void playCombatImpactCue(this, 0.9 + event.amount / 18);
           this.spawnLoveBurst(impactPoint, event.amount + event.blocked, event.defeated);
           this.spawnFloatingText(
-            `♥ ${event.amount + event.blocked}`,
+            `${pickHeartTextVariant()} ${event.amount + event.blocked}`,
             impactPoint.clone().add(new Phaser.Math.Vector2(0, -this.layout.tileSize * 0.12)),
-            '#ff9bc6',
+            ENEMY_DAMAGE_TEXT_COLOR,
+            { kind: 'enemy-damage', heartGlimpseChance: 0 },
           );
 
           if (event.defeated) {
@@ -432,19 +466,34 @@ export class GameScene extends Phaser.Scene {
         this.hud.pulsePlayerDamage();
         await this.crow?.takeHit();
         void playCombatImpactCue(this, 1 + event.amount / 16);
-        this.spawnFloatingText(`-${event.amount + event.blocked}`, this.crow?.getFocusPoint() ?? this.layout.crowPerch, '#ffcf9c');
+        this.spawnFloatingText(
+          `-${event.amount + event.blocked}`,
+          this.crow?.getFocusPoint() ?? this.layout.crowPerch,
+          '#ffcf9c',
+          { kind: 'player-damage', heartGlimpseChance: 0 },
+        );
         continue;
       }
 
       if (event.type === 'player-shield') {
         void playSupportCue(this, 'shield', 0.8 + event.amount / 16);
-        this.spawnFloatingText(`+${event.amount} SH`, this.crow?.getFocusPoint() ?? this.layout.crowPerch, '#9ff6ff');
+        this.spawnFloatingText(
+          `+${event.amount} SH`,
+          this.crow?.getFocusPoint() ?? this.layout.crowPerch,
+          '#9ff6ff',
+          { kind: 'shield' },
+        );
         continue;
       }
 
       if (event.type === 'player-heal') {
         void playSupportCue(this, 'heal', 0.8 + event.amount / 18);
-        this.spawnFloatingText(`+${event.amount} HP`, this.crow?.getFocusPoint() ?? this.layout.crowPerch, '#bff39f');
+        this.spawnFloatingText(
+          `+${event.amount} HP`,
+          this.crow?.getFocusPoint() ?? this.layout.crowPerch,
+          '#bff39f',
+          { kind: 'heal' },
+        );
         continue;
       }
 
@@ -461,6 +510,7 @@ export class GameScene extends Phaser.Scene {
             `${event.type === 'enemy-shield' ? '+' + event.amount + ' SH' : '+' + event.amount + ' HP'}`,
             actor.getFocusPoint(),
             event.type === 'enemy-shield' ? '#9ff6ff' : '#bff39f',
+            { kind: event.type === 'enemy-shield' ? 'shield' : 'heal' },
           );
         }
         continue;
@@ -472,7 +522,12 @@ export class GameScene extends Phaser.Scene {
       }
 
       if (event.type === 'battle-cleared') {
-        this.spawnFloatingText(`+${event.bonus}`, this.layout.crowPerch.clone().add(new Phaser.Math.Vector2(0, -50)), '#bff39f');
+        this.spawnFloatingText(
+          `+${event.bonus}`,
+          this.layout.crowPerch.clone().add(new Phaser.Math.Vector2(0, -50)),
+          '#bff39f',
+          { kind: 'bonus' },
+        );
         await this.crow?.celebrate();
       }
     }
@@ -668,13 +723,16 @@ export class GameScene extends Phaser.Scene {
     const riseDuration = Phaser.Math.Between(3800, 5600);
     const baseScale = Phaser.Math.FloatBetween(0.62, 1.12);
     const color = Phaser.Utils.Array.GetRandom(MUSIC_NOTE_COLORS);
+    const noteVariant = Math.random() > 0.58 ? 'double' : 'single';
     const pulseGraphic = this.add.graphics();
-
-    drawMusicNoteGraphic(pulseGraphic, color, Math.random() > 0.58 ? 'double' : 'single');
+    drawMusicNoteGraphic(pulseGraphic, color, noteVariant);
     pulseGraphic.setScale(baseScale);
+    const accentHeart = Math.random() < 0.25
+      ? this.createMusicNoteAccentHeart(noteVariant, baseScale)
+      : undefined;
 
     const container = this.add
-      .container(x, startY, [pulseGraphic])
+      .container(x, startY, [pulseGraphic, accentHeart].filter(Boolean) as Phaser.GameObjects.GameObject[])
       .setDepth(44)
       .setAlpha(0);
     container.setRotation(Phaser.Math.FloatBetween(-0.16, 0.16));
@@ -682,6 +740,7 @@ export class GameScene extends Phaser.Scene {
     const note: ActiveMusicNote = {
       container,
       pulseGraphic,
+      accentHeart,
       baseScale,
     };
     this.activeMusicNotes.add(note);
@@ -722,10 +781,81 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  private createMusicNoteAccentHeart(
+    noteVariant: 'single' | 'double',
+    baseScale: number,
+  ): Phaser.GameObjects.Graphics {
+    const heart = createHeartGraphic(this, {
+      size: noteVariant === 'double' ? 11 : 10,
+      fillColor: pickHeartAccentColor(),
+      strokeColor: '#2c1835',
+      fillAlpha: 0.92,
+      strokeAlpha: 0.84,
+      strokeWidth: 2,
+    })
+      .setPosition(noteVariant === 'double' ? 6 : -4, 8)
+      .setScale(baseScale)
+      .setRotation(Phaser.Math.FloatBetween(-0.18, 0.18))
+      .setAlpha(0.84);
+
+    return heart;
+  }
+
+  private playMusicNoteHeartMorph(note: ActiveMusicNote): void {
+    const morphHeart =
+      note.morphHeart ??
+      createHeartGraphic(this, {
+        size: 16,
+        fillColor: pickHeartAccentColor(),
+        strokeColor: '#fffaf8',
+        fillAlpha: 0.98,
+        strokeAlpha: 0.9,
+        strokeWidth: 2,
+      })
+        .setPosition(0, 0)
+        .setScale(note.baseScale * 0.48)
+        .setAlpha(0);
+
+    if (!note.morphHeart) {
+      note.container.add(morphHeart);
+      note.morphHeart = morphHeart;
+    }
+
+    morphHeart.setVisible(true);
+    morphHeart.setAlpha(0);
+    morphHeart.setScale(note.baseScale * 0.48);
+    morphHeart.setRotation(Phaser.Math.FloatBetween(-0.24, 0.24));
+    note.pulseGraphic.setAlpha(1);
+    note.accentHeart?.setAlpha(0.84);
+    note.morphTween?.remove();
+
+    note.morphTween = this.tweens.add({
+      targets: [morphHeart],
+      alpha: 0.94,
+      scaleX: note.baseScale * 1.06,
+      scaleY: note.baseScale * 1.06,
+      duration: Phaser.Math.Between(120, 180),
+      yoyo: true,
+      ease: 'Sine.InOut',
+      onStart: () => {
+        note.pulseGraphic.setAlpha(0.34);
+        note.accentHeart?.setAlpha(0.24);
+      },
+      onComplete: () => {
+        note.pulseGraphic.setAlpha(1);
+        note.accentHeart?.setAlpha(0.84);
+        morphHeart.setAlpha(0);
+        morphHeart.setScale(note.baseScale * 0.48);
+        note.morphTween = undefined;
+      },
+    });
+  }
+
   private destroyMusicNote(note: ActiveMusicNote): void {
     note.pulseTween?.remove();
     note.riseTween?.remove();
     note.swayTween?.remove();
+    note.morphTween?.remove();
     note.container.destroy(true);
     this.activeMusicNotes.delete(note);
   }
@@ -735,6 +865,7 @@ export class GameScene extends Phaser.Scene {
       note.pulseTween?.remove();
       note.riseTween?.remove();
       note.swayTween?.remove();
+      note.morphTween?.remove();
       note.container.destroy(true);
     });
     this.activeMusicNotes.clear();
@@ -745,6 +876,7 @@ export class GameScene extends Phaser.Scene {
       note.pulseTween?.remove();
       note.riseTween?.remove();
       note.swayTween?.remove();
+      note.morphTween?.remove();
       this.tweens.add({
         targets: note.container,
         alpha: 0,
@@ -806,7 +938,12 @@ export class GameScene extends Phaser.Scene {
     return this.add.image(point.x, point.y, TILE_TEXTURE_KEYS[tile.kind]).setOrigin(0.5).setDepth(10).setScale(this.layout.tileSize / 34);
   }
 
-  private spawnFloatingText(text: string, point: Phaser.Math.Vector2, color: string): void {
+  private spawnFloatingText(
+    text: string,
+    point: Phaser.Math.Vector2,
+    color: string,
+    options: FloatingTextOptions = {},
+  ): void {
     const label = this.add.text(point.x, point.y, text, {
       fontFamily: 'VT323',
       fontSize: `${Math.max(16, Math.round(this.layout.tileSize * 0.48))}px`,
@@ -814,6 +951,35 @@ export class GameScene extends Phaser.Scene {
       stroke: '#160d1b',
       strokeThickness: 3,
     }).setOrigin(0.5).setDepth(60);
+
+    const heartGlimpseChance =
+      options.heartGlimpseChance ??
+      ({
+        score: 0.1,
+        bonus: 0.1,
+        shield: 0.06,
+        heal: 0.06,
+        'enemy-damage': 0,
+        'player-damage': 0,
+        'enemy-support': 0.06,
+        generic: 0,
+      } satisfies Record<FloatingTextKind, number>)[options.kind ?? 'generic'];
+
+    if (heartGlimpseChance > 0 && Math.random() < heartGlimpseChance) {
+      const actualText = text;
+      const actualColor = color;
+      label.setText(pickHeartTextVariant());
+      label.setColor(pickHeartAccentColor());
+      this.time.delayedCall(Phaser.Math.Between(90, 140), () => {
+        if (!label.active) {
+          return;
+        }
+
+        label.setText(actualText);
+        label.setColor(actualColor);
+      });
+    }
+
     this.tweens.add({ targets: label, y: point.y - this.layout.tileSize * 0.65, alpha: 0, duration: 500, ease: 'Quad.Out', onComplete: () => label.destroy() });
   }
 
@@ -830,10 +996,10 @@ export class GameScene extends Phaser.Scene {
 
     for (let index = 0; index < heartCount; index += 1) {
       const heart = this.add
-        .text(point.x, point.y, '♥', {
+        .text(point.x, point.y, pickHeartTextVariant(), {
           fontFamily: 'VT323',
           fontSize: `${Math.max(14, Math.round(this.layout.tileSize * Phaser.Math.FloatBetween(0.36, 0.58)))}px`,
-          color: Phaser.Utils.Array.GetRandom(LOVE_HEART_COLORS),
+          color: pickHeartAccentColor(),
           stroke: '#2b1021',
           strokeThickness: 3,
         })

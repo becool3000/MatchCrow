@@ -178,6 +178,11 @@ button {
     linear-gradient(180deg, #5c3342 0 8px, #3e1e2b 8px 100%);
 }
 
+.hud-audio-button:disabled {
+  opacity: 0.68;
+  cursor: default;
+}
+
 .hud-audio-slash {
   position: absolute;
   inset: 50% auto auto 50%;
@@ -209,6 +214,10 @@ button {
   color: #ffd6df;
 }
 
+.hud-audio-button:disabled .hud-audio-icon {
+  color: #d0bfdc;
+}
+
 .hud-audio-svg {
   display: block;
   width: 1.22rem;
@@ -223,6 +232,16 @@ button {
 .hud-audio-svg-note {
   width: 1.18rem;
   height: 1.18rem;
+}
+
+.hud-audio-svg-next {
+  width: 1.08rem;
+  height: 1.08rem;
+}
+
+.hud-audio-svg-gear {
+  width: 1.14rem;
+  height: 1.14rem;
 }
 
 .brand-chip,
@@ -401,6 +420,52 @@ button {
   gap: 0.28rem;
 }
 
+.run-boon-strip {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.22rem;
+  min-height: 1.35rem;
+  padding-top: 0.04rem;
+}
+
+.run-boon-label {
+  color: var(--muted);
+  font-family: var(--font-display);
+  font-size: 0.5rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.run-boon-empty {
+  color: var(--muted);
+  font-size: 0.94rem;
+  line-height: 1;
+}
+
+.run-boon-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.2rem;
+  padding: 0.12rem 0.34rem 0.1rem;
+  border: 3px solid #4f3d64;
+  background:
+    linear-gradient(180deg, #503367 0 8px, var(--panel-soft) 8px 100%);
+  color: #fff6da;
+  font-family: var(--font-display);
+  font-size: 0.48rem;
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+
+.run-boon-chip-major {
+  border-color: #7a4c16;
+  background:
+    linear-gradient(180deg, #6f4a23 0 8px, #4d2f18 8px 100%);
+  color: #ffe7a6;
+}
+
 .hud-button,
 .overlay-action,
 .overlay-close {
@@ -559,7 +624,7 @@ button {
   position: relative;
   z-index: 1;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 0.38rem;
   min-width: 0;
@@ -583,6 +648,20 @@ button {
   font-size: 0.58rem;
   line-height: 1;
   letter-spacing: 0.06em;
+}
+
+.enemy-summary-stats {
+  display: grid;
+  justify-items: end;
+  gap: 0.18rem;
+  flex: 0 0 auto;
+}
+
+.enemy-summary-detail {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1;
+  text-align: right;
 }
 
 .command-button,
@@ -654,6 +733,14 @@ button {
 
 .upgrade-card {
   cursor: pointer;
+}
+
+.checkpoint-screen {
+  gap: 0.6rem;
+}
+
+.checkpoint-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .playfield-frame[data-locked='true'] {
@@ -820,6 +907,21 @@ button {
   box-shadow:
     inset 0 -4px 0 #452d5e,
     0 5px 0 rgba(24, 12, 33, 0.74);
+}
+
+.overlay-action-danger {
+  border-color: #7f2f3a;
+  background:
+    linear-gradient(180deg, #f27d87 0 35%, #d15461 35% 100%);
+  color: #2d1014;
+  box-shadow:
+    inset 0 -4px 0 #9f3945,
+    0 5px 0 rgba(44, 14, 20, 0.7);
+}
+
+.settings-screen {
+  display: grid;
+  gap: 0.72rem;
 }
 
 .leaderboard-list {
@@ -1269,8 +1371,7 @@ button {
   }
 
   .brand-chip,
-  .stat-box-high,
-  .stat-box-level {
+  .stat-box-high {
     display: none;
   }
 
@@ -1298,6 +1399,20 @@ button {
     gap: 0.14rem;
   }
 
+  .run-boon-strip {
+    gap: 0.14rem;
+    min-height: 1.08rem;
+  }
+
+  .run-boon-label,
+  .run-boon-chip {
+    font-size: 0.4rem;
+  }
+
+  .run-boon-empty {
+    font-size: 0.8rem;
+  }
+
   .hud-button,
   .restart-button {
     padding: 0.28rem 0.38rem 0.24rem;
@@ -1317,6 +1432,10 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .checkpoint-grid {
+    grid-template-columns: 1fr;
+  }
+
   .command-grid {
     gap: 0.12rem;
     padding: 0.14rem;
@@ -1329,6 +1448,10 @@ button {
 
   .enemy-summary-name {
     font-size: 0.86rem;
+  }
+
+  .enemy-summary-detail {
+    font-size: 0.62rem;
   }
 
   .enemy-summary-hp {
@@ -1383,6 +1506,10 @@ button {
     justify-content: stretch;
   }
 
+  .run-boon-strip {
+    gap: 0.12rem;
+  }
+
   .stat-box {
     flex: 1 1 calc(25% - 0.14rem);
     min-width: 0;
@@ -1403,6 +1530,10 @@ button {
 
   .enemy-summary-name {
     font-size: 0.78rem;
+  }
+
+  .enemy-summary-detail {
+    font-size: 0.56rem;
   }
 
   .enemy-summary-hp {

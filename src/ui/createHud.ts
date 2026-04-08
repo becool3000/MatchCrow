@@ -1,8 +1,16 @@
-import { PERMANENT_UPGRADE_OPTIONS, type PermanentUpgradeId, type PlayerActionId } from '../game/campaignData.ts';
+import {
+  CHECKPOINT_OPTION_DEFINITIONS,
+  PERMANENT_UPGRADE_OPTIONS,
+  RUN_BOON_DEFINITIONS,
+  type CheckpointOptionId,
+  type PermanentUpgradeId,
+  type PlayerActionId,
+  type RunBoonId,
+} from '../game/campaignData.ts';
 import type { MatchCrowViewState } from '../game/CrowsCacheGame.ts';
 import type { LeaderboardEntry } from '../services/leaderboard.ts';
 
-type OverlayMode = 'leaderboard' | 'submit' | null;
+type OverlayMode = 'leaderboard' | 'submit' | 'settings' | 'reset-confirm' | null;
 
 interface LeaderboardOverlayState {
   status: 'idle' | 'loading' | 'ready' | 'error' | 'unavailable';
@@ -30,8 +38,12 @@ export interface GameHud {
   onRetire: (handler: () => void) => void;
   onToggleSound: (handler: () => void) => void;
   onToggleMusic: (handler: () => void) => void;
+  onSkipMusic: (handler: () => void) => void;
+  onResetPlayerData: (handler: () => void) => void;
   onSelectAction: (handler: (action: PlayerActionId) => void) => void;
   onChooseUpgrade: (handler: (upgradeId: PermanentUpgradeId) => void) => void;
+  onChooseCheckpoint: (handler: (optionId: CheckpointOptionId) => void) => void;
+  onPickRunBoon: (handler: (boonId: RunBoonId) => void) => void;
   onOpenLeaderboard: (handler: () => void) => void;
   onRetryLeaderboard: (handler: () => void) => void;
   onOpenSubmit: (handler: () => void) => void;
@@ -56,6 +68,7 @@ export function createHud(
     devToolsEnabled: boolean;
     soundEnabled: boolean;
     musicEnabled: boolean;
+    musicSkippable: boolean;
   },
 ): GameHud {
   root.innerHTML = `
@@ -98,6 +111,36 @@ export function createHud(
                 </svg>
               </span>
               <span class="hud-audio-slash" aria-hidden="true"></span>
+            </button>
+            <button
+              type="button"
+              class="hud-audio-button hud-audio-button-skip"
+              data-skip-music
+              aria-label="Skip to next track"
+              title="Next track"
+              ${!options.musicEnabled || !options.musicSkippable ? 'disabled' : ''}
+            >
+              <span class="hud-audio-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" class="hud-audio-svg hud-audio-svg-next">
+                  <path d="M5.2 6.1v11.8l8.05-5.9z" fill="currentColor"></path>
+                  <path d="M12.55 6.1v11.8l8.05-5.9z" fill="currentColor"></path>
+                  <rect x="20.45" y="5.35" width="2.2" height="13.3" fill="currentColor"></rect>
+                </svg>
+              </span>
+            </button>
+            <button
+              type="button"
+              class="hud-audio-button hud-audio-button-settings"
+              data-open-settings
+              aria-label="Open settings"
+              title="Settings"
+            >
+              <span class="hud-audio-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" class="hud-audio-svg hud-audio-svg-gear">
+                  <path d="M10.85 2.9h2.3l.42 2.13a7.44 7.44 0 0 1 1.79.74l1.86-1.14 1.63 1.63-1.14 1.86c.3.56.55 1.16.74 1.79l2.13.42v2.3l-2.13.42a7.44 7.44 0 0 1-.74 1.79l1.14 1.86-1.63 1.63-1.86-1.14a7.44 7.44 0 0 1-1.79.74l-.42 2.13h-2.3l-.42-2.13a7.44 7.44 0 0 1-1.79-.74L6.98 19.37l-1.63-1.63 1.14-1.86a7.44 7.44 0 0 1-.74-1.79l-2.13-.42v-2.3l2.13-.42c.19-.63.44-1.23.74-1.79L5.35 6.3l1.63-1.63 1.86 1.14c.56-.3 1.16-.55 1.79-.74z" fill="currentColor"></path>
+                  <circle cx="12" cy="12" r="3.1" fill="#352148"></circle>
+                </svg>
+              </span>
             </button>
           </div>
           <span class="brand-chip">MatchCrow</span>
@@ -143,6 +186,7 @@ export function createHud(
             <button type="button" class="hud-button hud-button-secondary" data-retire>Retire</button>
             <button type="button" class="restart-button" data-restart>New Run</button>
           </div>
+          <div class="run-boon-strip" data-run-boons></div>
         </header>
 
         <section class="playfield-frame" data-playfield-frame>
@@ -183,8 +227,11 @@ export function createHud(
   const playfieldFrameEl = root.querySelector<HTMLElement>('[data-playfield-frame]');
   const commandGridEl = root.querySelector<HTMLDivElement>('[data-command-grid]');
   const enemySummaryEl = root.querySelector<HTMLDivElement>('[data-enemy-summary]');
+  const runBoonStripEl = root.querySelector<HTMLDivElement>('[data-run-boons]');
   const soundToggleButton = root.querySelector<HTMLButtonElement>('[data-toggle-sound]');
   const musicToggleButton = root.querySelector<HTMLButtonElement>('[data-toggle-music]');
+  const musicSkipButton = root.querySelector<HTMLButtonElement>('[data-skip-music]');
+  const settingsButton = root.querySelector<HTMLButtonElement>('[data-open-settings]');
   const restartButton = root.querySelector<HTMLButtonElement>('[data-restart]');
   const skipBattleButton = root.querySelector<HTMLButtonElement>('[data-skip-battle]');
   const retireButton = root.querySelector<HTMLButtonElement>('[data-retire]');
@@ -212,8 +259,11 @@ export function createHud(
     !playfieldFrameEl ||
     !commandGridEl ||
     !enemySummaryEl ||
+    !runBoonStripEl ||
     !soundToggleButton ||
     !musicToggleButton ||
+    !musicSkipButton ||
+    !settingsButton ||
     !restartButton ||
     !retireButton ||
     !leaderboardButton ||
@@ -236,8 +286,12 @@ export function createHud(
   const retireHandlers = new Set<() => void>();
   const toggleSoundHandlers = new Set<() => void>();
   const toggleMusicHandlers = new Set<() => void>();
+  const skipMusicHandlers = new Set<() => void>();
+  const resetPlayerDataHandlers = new Set<() => void>();
   const selectActionHandlers = new Set<(action: PlayerActionId) => void>();
   const chooseUpgradeHandlers = new Set<(upgradeId: PermanentUpgradeId) => void>();
+  const chooseCheckpointHandlers = new Set<(optionId: CheckpointOptionId) => void>();
+  const pickRunBoonHandlers = new Set<(boonId: RunBoonId) => void>();
   const openLeaderboardHandlers = new Set<() => void>();
   const retryLeaderboardHandlers = new Set<() => void>();
   const openSubmitHandlers = new Set<() => void>();
@@ -280,6 +334,19 @@ export function createHud(
 
   musicToggleButton.addEventListener('click', () => {
     toggleMusicHandlers.forEach((handler) => handler());
+  });
+
+  musicSkipButton.addEventListener('click', () => {
+    if (musicSkipButton.disabled) {
+      return;
+    }
+
+    skipMusicHandlers.forEach((handler) => handler());
+  });
+
+  settingsButton.addEventListener('click', () => {
+    overlayMode = 'settings';
+    renderOverlay();
   });
 
   leaderboardButton.addEventListener('click', () => {
@@ -337,12 +404,48 @@ export function createHud(
       return;
     }
 
+    if (target.closest('[data-open-reset-player-data]')) {
+      overlayMode = 'reset-confirm';
+      renderOverlay();
+      return;
+    }
+
+    if (target.closest('[data-back-settings]')) {
+      overlayMode = 'settings';
+      renderOverlay();
+      return;
+    }
+
+    if (target.closest('[data-confirm-reset-player-data]')) {
+      overlayMode = null;
+      resetPlayerDataHandlers.forEach((handler) => handler());
+      return;
+    }
+
     const upgradeId = target.closest<HTMLElement>('[data-upgrade-id]')?.dataset.upgradeId as
       | PermanentUpgradeId
       | undefined;
 
     if (upgradeId) {
       chooseUpgradeHandlers.forEach((handler) => handler(upgradeId));
+      return;
+    }
+
+    const checkpointId = target.closest<HTMLElement>('[data-checkpoint-id]')?.dataset.checkpointId as
+      | CheckpointOptionId
+      | undefined;
+
+    if (checkpointId) {
+      chooseCheckpointHandlers.forEach((handler) => handler(checkpointId));
+      return;
+    }
+
+    const boonId = target.closest<HTMLElement>('[data-boon-id]')?.dataset.boonId as
+      | RunBoonId
+      | undefined;
+
+    if (boonId) {
+      pickRunBoonHandlers.forEach((handler) => handler(boonId));
     }
   });
 
@@ -455,10 +558,12 @@ export function createHud(
     leaderboardButton.dataset.enabled = `${options.leaderboardReadEnabled}`;
     soundToggleButton.dataset.enabled = `${soundEnabled}`;
     musicToggleButton.dataset.enabled = `${musicEnabled}`;
+    musicSkipButton.disabled = !musicEnabled || !options.musicSkippable;
 
     commandGridEl.innerHTML = renderCommandGrid(state);
     enemySummaryEl.innerHTML = renderEnemySummary(state);
     enemySummaryEl.hidden = state.enemies.every((enemy) => enemy.currentHp <= 0);
+    runBoonStripEl.innerHTML = renderRunBoons(state);
     renderOverlay();
   };
 
@@ -470,6 +575,7 @@ export function createHud(
   const setMusicEnabled = (enabled: boolean): void => {
     musicEnabled = enabled;
     musicToggleButton.dataset.enabled = `${musicEnabled}`;
+    musicSkipButton.disabled = !musicEnabled || !options.musicSkippable;
   };
 
   const showLeaderboardLoading = (): void => {
@@ -558,13 +664,12 @@ export function createHud(
   };
 
   const closeOverlay = (): void => {
-    if (currentState.pendingUpgrades) {
+    if (overlayMode === null && currentState.pendingUpgrades) {
       return;
     }
 
     overlayMode = null;
-    ensuredOverlayEl.dataset.mode = '';
-    ensuredOverlayEl.hidden = true;
+    renderOverlay();
   };
 
   function renderOverlay(): void {
@@ -589,11 +694,48 @@ export function createHud(
       return;
     }
 
+    if (overlayMode === 'settings') {
+      ensuredOverlayEl.hidden = false;
+      ensuredOverlayEl.dataset.mode = 'settings';
+      ensuredOverlayCloseButton.hidden = false;
+      ensuredOverlayTitleEl.textContent = 'Settings';
+      ensuredOverlayBodyEl.innerHTML = renderSettingsOverlay();
+      return;
+    }
+
+    if (overlayMode === 'reset-confirm') {
+      ensuredOverlayEl.hidden = false;
+      ensuredOverlayEl.dataset.mode = 'settings';
+      ensuredOverlayCloseButton.hidden = false;
+      ensuredOverlayTitleEl.textContent = 'Reset Player Data';
+      ensuredOverlayBodyEl.innerHTML = renderResetConfirmOverlay();
+      return;
+    }
+
+    if (currentState.phase === 'checkpoint' && currentState.checkpointOptions) {
+      ensuredOverlayEl.hidden = false;
+      ensuredOverlayEl.dataset.mode = 'checkpoint';
+      ensuredOverlayCloseButton.hidden = true;
+      ensuredOverlayTitleEl.textContent = 'Checkpoint';
+      ensuredOverlayBodyEl.innerHTML = renderCheckpointOverlay(currentState);
+      return;
+    }
+
+    if (currentState.phase === 'boon-draft' && currentState.boonDraft) {
+      ensuredOverlayEl.hidden = false;
+      ensuredOverlayEl.dataset.mode = 'boon-draft';
+      ensuredOverlayCloseButton.hidden = true;
+      ensuredOverlayTitleEl.textContent =
+        currentState.boonDraft.tier === 'major' ? 'Major Boon' : 'Run Boon';
+      ensuredOverlayBodyEl.innerHTML = renderBoonDraftOverlay(currentState);
+      return;
+    }
+
     if (currentState.pendingUpgrades) {
       ensuredOverlayEl.hidden = false;
       ensuredOverlayEl.dataset.mode = 'upgrade';
       ensuredOverlayCloseButton.hidden = true;
-      ensuredOverlayTitleEl.textContent = 'Permanent Upgrade';
+      ensuredOverlayTitleEl.textContent = currentState.phase === 'battle' ? 'Level Up' : 'Permanent Upgrade';
       ensuredOverlayBodyEl.innerHTML = renderUpgradeOverlay(currentState);
       return;
     }
@@ -629,11 +771,23 @@ export function createHud(
     onToggleMusic(handler: () => void) {
       toggleMusicHandlers.add(handler);
     },
+    onSkipMusic(handler: () => void) {
+      skipMusicHandlers.add(handler);
+    },
+    onResetPlayerData(handler: () => void) {
+      resetPlayerDataHandlers.add(handler);
+    },
     onSelectAction(handler: (action: PlayerActionId) => void) {
       selectActionHandlers.add(handler);
     },
     onChooseUpgrade(handler: (upgradeId: PermanentUpgradeId) => void) {
       chooseUpgradeHandlers.add(handler);
+    },
+    onChooseCheckpoint(handler: (optionId: CheckpointOptionId) => void) {
+      chooseCheckpointHandlers.add(handler);
+    },
+    onPickRunBoon(handler: (boonId: RunBoonId) => void) {
+      pickRunBoonHandlers.add(handler);
     },
     onOpenLeaderboard(handler: () => void) {
       openLeaderboardHandlers.add(handler);
@@ -691,22 +845,122 @@ function renderEnemySummary(state: MatchCrowViewState): string {
       (enemy) => `
         <div class="enemy-summary-row">
           <span class="enemy-summary-name">${escapeHtml(enemy.name)}</span>
-          <strong class="enemy-summary-hp">${enemy.currentHp}/${enemy.maxHp}</strong>
+          <div class="enemy-summary-stats">
+            <strong class="enemy-summary-hp">HP ${enemy.currentHp}/${enemy.maxHp}</strong>
+            <span class="enemy-summary-detail">DEF ${enemy.shield} | ${escapeHtml(formatEnemyIntentSummary(enemy.intent.type, enemy.intent.value))}</span>
+          </div>
         </div>
       `,
     )
     .join('');
 }
 
+function renderRunBoons(state: MatchCrowViewState): string {
+  const activeBoons = Object.entries(state.runBoons)
+    .filter(([, stacks]) => stacks > 0)
+    .map(([boonId, stacks]) => ({
+      definition: RUN_BOON_DEFINITIONS[boonId as RunBoonId],
+      stacks,
+    }));
+
+  if (activeBoons.length === 0) {
+    return `
+      <span class="run-boon-label">Run Boons</span>
+      <span class="run-boon-empty">None yet</span>
+    `;
+  }
+
+  return `
+    <span class="run-boon-label">Run Boons</span>
+    ${activeBoons
+      .map(
+        ({ definition, stacks }) => `
+          <span
+            class="run-boon-chip run-boon-chip-${definition.tier}"
+            title="${escapeAttribute(definition.description)}"
+          >
+            ${escapeHtml(definition.label)}${stacks > 1 ? ` x${stacks}` : ''}
+          </span>
+        `,
+      )
+      .join('')}
+  `;
+}
+
+function renderCheckpointOverlay(state: MatchCrowViewState): string {
+  return `
+    <section class="upgrade-screen checkpoint-screen">
+      <p class="overlay-copy">Checkpoint before Battle ${state.battleIndex}.</p>
+      <p class="overlay-message">Choose a quick route into the next fight.</p>
+      <div class="upgrade-grid checkpoint-grid">
+        ${(state.checkpointOptions ?? [])
+          .map((optionId) => {
+            const option = CHECKPOINT_OPTION_DEFINITIONS[optionId];
+
+            return `
+              <button type="button" class="upgrade-card" data-checkpoint-id="${option.id}">
+                <strong>${escapeHtml(option.label)}</strong>
+                <span>${escapeHtml(option.description)}</span>
+              </button>
+            `;
+          })
+          .join('')}
+      </div>
+    </section>
+  `;
+}
+
+function renderBoonDraftOverlay(state: MatchCrowViewState): string {
+  const draft = state.boonDraft;
+
+  if (!draft) {
+    return '';
+  }
+
+  return `
+    <section class="upgrade-screen checkpoint-screen">
+      <p class="overlay-copy">
+        Choose 1 ${draft.tier === 'major' ? 'major' : 'run'} boon for Battle ${state.battleIndex}.
+      </p>
+      <p class="overlay-message">
+        ${draft.tier === 'major' ? 'Big swing upgrade.' : 'Light build shaping for this run.'}
+      </p>
+      <div class="upgrade-grid checkpoint-grid">
+        ${draft.options
+          .map((boonId) => {
+            const boon = RUN_BOON_DEFINITIONS[boonId];
+
+            return `
+              <button type="button" class="upgrade-card" data-boon-id="${boon.id}">
+                <strong>${escapeHtml(boon.label)}</strong>
+                <span>${escapeHtml(boon.description)}</span>
+              </button>
+            `;
+          })
+          .join('')}
+      </div>
+    </section>
+  `;
+}
+
 function renderUpgradeOverlay(state: MatchCrowViewState): string {
+  const inBattle = state.phase === 'battle';
+  const remainingChoices = state.pendingUpgrades?.remainingChoices ?? 0;
+
   return `
     <section class="upgrade-screen">
-      <p class="overlay-copy">Choose ${state.pendingUpgrades?.remainingChoices ?? 0} permanent upgrade${
-        (state.pendingUpgrades?.remainingChoices ?? 0) === 1 ? '' : 's'
-      }. They apply on your next run.</p>
-      <p class="overlay-message overlay-message-success">
-        Run score ${state.score.toString().padStart(6, '0')} earned +${state.postRun.awardedXp} XP.
-      </p>
+      <p class="overlay-copy">${
+        inBattle
+          ? `Level ${state.progression.level} reached. Timer paused until you choose ${remainingChoices} permanent upgrade${
+              remainingChoices === 1 ? '' : 's'
+            } for your next run.`
+          : `Choose ${remainingChoices} permanent upgrade${remainingChoices === 1 ? '' : 's'}. They apply on your next run.`
+      }</p>
+      <p class="overlay-message overlay-message-success">${
+        inBattle
+          ? `Run XP so far: +${state.postRun.awardedXp}.`
+          : `Run score ${state.score.toString().padStart(6, '0')} earned +${state.postRun.awardedXp} XP.`
+      }</p>
       <div class="upgrade-grid">
         ${PERMANENT_UPGRADE_OPTIONS.map(
           (option) => `
@@ -716,6 +970,36 @@ function renderUpgradeOverlay(state: MatchCrowViewState): string {
             </button>
           `,
         ).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function renderSettingsOverlay(): string {
+  return `
+    <section class="settings-screen">
+      <p class="overlay-copy">Manage this local profile and run state.</p>
+      <p class="overlay-message">Resetting clears XP, upgrades, high score, initials, and your local player ID.</p>
+      <div class="overlay-actions overlay-actions-spread">
+        <button type="button" class="overlay-action overlay-action-secondary" data-close-overlay>Close</button>
+        <button type="button" class="overlay-action overlay-action-danger" data-open-reset-player-data>
+          Reset Player Data
+        </button>
+      </div>
+    </section>
+  `;
+}
+
+function renderResetConfirmOverlay(): string {
+  return `
+    <section class="settings-screen">
+      <p class="overlay-copy">This will permanently reset your local MatchCrow profile.</p>
+      <p class="overlay-message">You will lose saved XP, permanent upgrades, local high score, and submission history on this device.</p>
+      <div class="overlay-actions overlay-actions-spread">
+        <button type="button" class="overlay-action overlay-action-secondary" data-back-settings>Back</button>
+        <button type="button" class="overlay-action overlay-action-danger" data-confirm-reset-player-data>
+          Reset And Start Over
+        </button>
       </div>
     </section>
   `;
@@ -836,4 +1120,16 @@ function formatHp(currentHp: number, maxHp: number): string {
 
 function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function formatEnemyIntentSummary(type: MatchCrowViewState['enemies'][number]['intent']['type'], value: number): string {
+  if (type === 'attack') {
+    return `ATK ${value}`;
+  }
+
+  if (type === 'guard') {
+    return `GUARD ${value}`;
+  }
+
+  return `HEAL ${value}`;
 }
